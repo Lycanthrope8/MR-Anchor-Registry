@@ -1,0 +1,21 @@
+# =============================================================================
+# Crypto Config - Single Org Network (Org1 + Orderer)
+# =============================================================================
+# FIX: Added OrdererOrgs so orderer MSP gets generated
+# =============================================================================
+
+OrdererOrgs:
+  - Name: Orderer
+    Domain: example.com
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer
+
+PeerOrgs:
+  - Name: Org1
+    Domain: org1.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+    Users:
+      Count: 1

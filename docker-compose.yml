@@ -1,0 +1,174 @@
+# =============================================================================
+# MR-Anchor-Registry - Docker Compose
+# =============================================================================
+# Single-Org Fabric Network with Channel Participation API
+# NO system channel - uses osnadmin to join channels
+# =============================================================================
+
+version: '3.8'
+
+networks:
+  fabric_network:
+    name: fabric_network
+
+volumes:
+  orderer_data:
+  peer0_data:
+  postgres_data:
+
+services:
+  # ===========================================================================
+  # ORDERER (Channel Participation API - no system channel)
+  # ===========================================================================
+  orderer.example.com:
+    image: hyperledger/fabric-orderer:${FABRIC_VERSION:-2.5.4}
+    container_name: orderer.example.com
+    environment:
+      - FABRIC_LOGGING_SPEC=${FABRIC_LOGGING_SPEC:-INFO}
+      - ORDERER_GENERAL_LISTENADDRESS=0.0.0.0
+      - ORDERER_GENERAL_LISTENPORT=7050
+      - ORDERER_GENERAL_LOCALMSPID=OrdererMSP
+      - ORDERER_GENERAL_LOCALMSPDIR=/var/hyperledger/orderer/msp
+      - ORDERER_GENERAL_TLS_ENABLED=false
+      # Channel participation API (no system channel)
+      - ORDERER_GENERAL_BOOTSTRAPMETHOD=none
+      - ORDERER_CHANNELPARTICIPATION_ENABLED=true
+      - ORDERER_ADMIN_TLS_ENABLED=false
+      - ORDERER_ADMIN_LISTENADDRESS=0.0.0.0:7053
+    ports:
+      - "${ORDERER_PORT:-7050}:7050"
+      - "${ORDERER_ADMIN_PORT:-7053}:7053"
+    volumes:
+      - ./network/organizations/ordererOrganizations/example.com/orderers/orderer.example.com/msp:/var/hyperledger/orderer/msp:ro
+      - orderer_data:/var/hyperledger/production/orderer
+    networks:
+      - fabric_network
+
+  # ===========================================================================
+  # PEER (Org1 only - single org network)
+  # ===========================================================================
+  peer0.org1.example.com:
+    image: hyperledger/fabric-peer:${FABRIC_VERSION:-2.5.4}
+    container_name: peer0.org1.example.com
+    environment:
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=fabric_network
+      - FABRIC_LOGGING_SPEC=${FABRIC_LOGGING_SPEC:-INFO}
+      - CORE_PEER_TLS_ENABLED=false
+      - CORE_PEER_ID=peer0.org1.example.com
+      - CORE_PEER_ADDRESS=peer0.org1.example.com:7051
+      - CORE_PEER_LISTENADDRESS=0.0.0.0:7051
+      - CORE_PEER_CHAINCODEADDRESS=peer0.org1.example.com:7052
+      - CORE_PEER_CHAINCODELISTENADDRESS=0.0.0.0:7052
+      - CORE_PEER_GOSSIP_BOOTSTRAP=peer0.org1.example.com:7051
+      - CORE_PEER_GOSSIP_EXTERNALENDPOINT=peer0.org1.example.com:7051
+      - CORE_PEER_LOCALMSPID=Org1MSP
+      - CORE_PEER_MSPCONFIGPATH=/etc/hyperledger/fabric/msp
+    ports:
+      - "${PEER_PORT:-7051}:7051"
+      - "${PEER_CHAINCODE_PORT:-7052}:7052"
+    volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
+      - ./network/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/msp:/etc/hyperledger/fabric/msp:ro
+      - peer0_data:/var/hyperledger/production
+    networks:
+      - fabric_network
+
+  # ===========================================================================
+  # CLI (Fabric tools for crypto gen and chaincode deployment)
+  # ===========================================================================
+  cli:
+    image: hyperledger/fabric-tools:${FABRIC_VERSION:-2.5.4}
+    container_name: cli
+    tty: true
+    stdin_open: true
+    environment:
+      - GOPATH=/opt/gopath
+      - FABRIC_LOGGING_SPEC=${FABRIC_LOGGING_SPEC:-INFO}
+      - CORE_PEER_ID=cli
+      - CORE_PEER_ADDRESS=peer0.org1.example.com:7051
+      - CORE_PEER_LOCALMSPID=Org1MSP
+      - CORE_PEER_TLS_ENABLED=false
+      - CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/organizations/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp
+    working_dir: /opt/gopath/src/github.com/hyperledger/fabric/peer
+    volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
+      - ./chaincode:/opt/gopath/src/github.com/hyperledger/fabric/peer/chaincode
+      - ./network/organizations:/opt/gopath/src/github.com/hyperledger/fabric/peer/organizations
+      - ./network/channel-artifacts:/opt/gopath/src/github.com/hyperledger/fabric/peer/channel-artifacts
+      - ./network/configtx:/opt/gopath/src/github.com/hyperledger/fabric/peer/configtx
+      - ./network/crypto-config.yaml:/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto-config.yaml:ro
+      - ./scripts:/opt/gopath/src/github.com/hyperledger/fabric/peer/scripts
+    networks:
+      - fabric_network
+
+  # ===========================================================================
+  # POSTGRESQL (Off-chain storage)
+  # ===========================================================================
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-15-alpine}
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-anchor_admin}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-anchor_secret_2025}
+      - POSTGRES_DB=${POSTGRES_DB:-anchor_registry}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./storage/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-anchor_admin} -d ${POSTGRES_DB:-anchor_registry}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fabric_network
+
+  # ===========================================================================
+  # GATEWAY (REST API)
+  # ===========================================================================
+  gateway:
+    build:
+      context: ./gateway/registry-gateway
+      dockerfile: Dockerfile
+    container_name: gateway
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=3000
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-anchor_registry}
+      - POSTGRES_USER=${POSTGRES_USER:-anchor_admin}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-anchor_secret_2025}
+      - FABRIC_PEER_ENDPOINT=peer0.org1.example.com:7051
+      - FABRIC_ORDERER_ENDPOINT=orderer.example.com:7050
+      - FABRIC_CHANNEL=${FABRIC_CHANNEL:-mychannel}
+      - FABRIC_CHAINCODE=${FABRIC_CHAINCODE:-anchorregistry}
+      - FABRIC_MSP_ID=Org1MSP
+      - FABRIC_CRYPTO_PATH=/etc/hyperledger/fabric
+      - FABRIC_MOCK=${FABRIC_MOCK:-false}
+      - ENDORSEMENT_THRESHOLD=${ENDORSEMENT_THRESHOLD:-1}
+      - API_KEYS=${API_KEYS:-proposer-key-001:proposer:Alice,endorser-key-001:endorser:Carlos,supervisor-key-001:supervisor:Eva}
+      - SUPERVISOR_IDS=${SUPERVISOR_IDS:-supervisor-key-001}
+    ports:
+      - "${GATEWAY_PORT:-3000}:3000"
+    volumes:
+      - ./network/organizations:/etc/hyperledger/fabric/organizations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - fabric_network
+
+  # ===========================================================================
+  # TEST RUNNER
+  # ===========================================================================
+  test-runner:
+    image: curlimages/curl:${CURL_VERSION:-8.5.0}
+    container_name: test-runner
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["sh", "-c", "sleep infinity"]
+    networks:
+      - fabric_network
