@@ -2,6 +2,12 @@
 # =============================================================================
 # MR-Anchor-Registry - Startup Script (up.sh)
 # =============================================================================
+# This script starts all backend components:
+# 1. Fabric Network (fabric-samples/test-network)
+# 2. Deploy/upgrade chaincode
+# 3. PostgreSQL
+# 4. Gateway
+# =============================================================================
 
 set -e
 
@@ -50,8 +56,6 @@ export SUPERVISOR_IDS="${SUPERVISOR_IDS:-supervisor-key-001}"
 # SETUP PATH FOR NODE.JS
 # =============================================================================
 
-# ./up.sh --skip-fabric --skip-chaincode
-
 export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 
 if [ -s "$HOME/.nvm/nvm.sh" ]; then
@@ -60,12 +64,6 @@ if [ -s "$HOME/.nvm/nvm.sh" ]; then
 fi
 
 if ! command -v node &> /dev/null; then
-    if [ -x "/opt/homebrew/bin/node" ]; then
-        export PATH="/opt/homebrew/bin:$PATH"
-    elif [ -x "/usr/local/bin/node" ]; then
-        export PATH="/usr/local/bin:$PATH"
-    fi
-    
     if [ -d "$HOME/.nvm/versions/node" ]; then
         LATEST_NODE=$(ls -1 "$HOME/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)
         if [ -n "$LATEST_NODE" ]; then
@@ -80,9 +78,7 @@ fi
 
 check_command() {
     if ! command -v $1 &> /dev/null; then
-        echo -e "${RED}Error: $1 is required but not installed or not in PATH.${NC}"
-        echo ""
-        echo "If already installed, check your PATH or run: which $1"
+        echo -e "${RED}Error: $1 is required but not installed.${NC}"
         exit 1
     fi
 }
@@ -124,7 +120,7 @@ done
 # =============================================================================
 
 echo -e "${CYAN}=========================================="
-echo "  MR-Anchor-Registry - Startup"
+echo "  MR-Anchor-Registry Backend v2.0"
 echo -e "==========================================${NC}"
 echo ""
 echo "Configuration:"
@@ -133,7 +129,6 @@ echo "  MR_ANCHOR_DIR:   $MR_ANCHOR_DIR"
 echo "  FABRIC_SAMPLES:  $FABRIC_SAMPLES_DIR"
 echo "  GATEWAY_PORT:    $GATEWAY_PORT"
 echo "  POSTGRES_PORT:   $POSTGRES_PORT"
-echo "  FABRIC_MOCK:     $FABRIC_MOCK"
 echo ""
 
 echo -e "${YELLOW}Checking prerequisites...${NC}"
@@ -201,26 +196,26 @@ if [ "$SKIP_CHAINCODE" = false ]; then
         echo -e "${GREEN}  ✓ Chaincode already deployed${NC}"
         peer lifecycle chaincode querycommitted -C $FABRIC_CHANNEL -n $FABRIC_CHAINCODE 2>/dev/null | head -1
     fi
-    
+
     if [ "$CHAINCODE_DEPLOYED" = false ] || [ "$FORCE_DEPLOY" = true ]; then
         echo "  Deploying chaincode..."
         cd "$TEST_NETWORK_DIR"
-        
+
         SEQUENCE=1
         if [ "$CHAINCODE_DEPLOYED" = true ]; then
             CURRENT_SEQ=$(peer lifecycle chaincode querycommitted -C $FABRIC_CHANNEL -n $FABRIC_CHAINCODE 2>/dev/null | grep -o "Sequence: [0-9]*" | grep -o "[0-9]*")
             SEQUENCE=$((CURRENT_SEQ + 1))
         fi
-        
+
         ./network.sh deployCC \
             -c $FABRIC_CHANNEL \
             -ccn $FABRIC_CHAINCODE \
             -ccp "$MR_ANCHOR_DIR/chaincode/anchor-registry" \
             -ccl javascript \
             -ccs $SEQUENCE
-        
+
         echo -e "${GREEN}  ✓ Chaincode deployed (sequence: $SEQUENCE)${NC}"
-        
+
         echo "  Initializing ledger..."
         peer chaincode invoke \
             -o localhost:7050 \
@@ -234,7 +229,7 @@ if [ "$SKIP_CHAINCODE" = false ]; then
             --peerAddresses localhost:9051 \
             --tlsRootCertFiles "${TEST_NETWORK_DIR}/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt" \
             -c '{"function":"InitLedger","Args":[]}'
-        
+
         echo -e "${GREEN}  ✓ Ledger initialized${NC}"
     fi
 else
@@ -251,7 +246,7 @@ if docker ps | grep -q mr-anchor-postgres; then
     echo -e "${GREEN}  ✓ PostgreSQL already running${NC}"
 else
     docker rm mr-anchor-postgres 2>/dev/null || true
-    
+
     docker run -d \
         --name mr-anchor-postgres \
         --network fabric_test \
@@ -262,17 +257,17 @@ else
         -v "${MR_ANCHOR_DIR}/storage/init.sql:/docker-entrypoint-initdb.d/init.sql:ro" \
         postgres:15-alpine \
         > /dev/null
-    
-    echo "  Waiting for PostgreSQL to be ready..."
+
+    echo "  Waiting for PostgreSQL..."
     sleep 5
-    
+
     for i in {1..30}; do
         if docker exec mr-anchor-postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB > /dev/null 2>&1; then
             break
         fi
         sleep 1
     done
-    
+
     echo -e "${GREEN}  ✓ PostgreSQL started on port $POSTGRES_PORT${NC}"
 fi
 
@@ -313,7 +308,7 @@ cd "$MR_ANCHOR_DIR/gateway/registry-gateway"
 nohup node src/index.js > "$MR_ANCHOR_DIR/gateway.log" 2>&1 &
 echo $! > "$MR_ANCHOR_DIR/gateway.pid"
 
-echo "  Waiting for Gateway to be ready..."
+echo "  Waiting for Gateway..."
 sleep 5
 
 for i in {1..30}; do
@@ -339,7 +334,7 @@ fi
 
 echo ""
 echo -e "${CYAN}=========================================="
-echo "  Startup Complete!"
+echo "  Backend Started Successfully!"
 echo -e "==========================================${NC}"
 echo ""
 echo "Services running:"
@@ -351,13 +346,24 @@ echo "  • Chaincode: $FABRIC_CHAINCODE on channel $FABRIC_CHANNEL"
 echo "  • PostgreSQL: localhost:$POSTGRES_PORT"
 echo "  • Gateway: http://localhost:$GATEWAY_PORT"
 echo ""
-echo "Health check:"
-curl -s http://localhost:$GATEWAY_PORT/health | python3 -m json.tool 2>/dev/null || curl -s http://localhost:$GATEWAY_PORT/health
+echo "Endpoints:"
+echo "  Health:      http://localhost:$GATEWAY_PORT/health"
+echo "  Admin UI:    http://localhost:$GATEWAY_PORT/admin/"
+echo "  SSE Stream:  http://localhost:$GATEWAY_PORT/admin/api/events/stream"
 echo ""
-echo -e "${GREEN}Ready for requests!${NC}"
+echo "API Keys:"
+echo "  proposer-key-001    - Proposer role (create claims)"
+echo "  endorser-key-001    - Endorser role (endorse claims)"
+echo "  supervisor-key-001  - Supervisor role (approve/reject/revoke)"
 echo ""
-echo "Quick test:"
+echo "Quick Test:"
 echo "  curl http://localhost:$GATEWAY_PORT/health"
+echo ""
+echo "  # Propose a claim"
+echo "  node scripts/cli.js propose test-asset --x=1 --y=2 --z=3"
+echo ""
+echo "  # Open supervisor UI"
+echo "  http://localhost:$GATEWAY_PORT/admin/"
 echo ""
 echo "Logs:"
 echo "  tail -f $MR_ANCHOR_DIR/gateway.log"

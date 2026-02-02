@@ -1,488 +1,704 @@
-/*
-  MR Anchor Registry — Supervisor UI
+/**
+ * MR Anchor Registry — Supervisor UI v2.0
+ * 
+ * Features:
+ * - Real-time updates via Server-Sent Events (SSE)
+ * - On-chain reject with reason (auditable)
+ * - Approve (endorse), Reject, Revoke actions
+ * - No manual refresh required
+ */
 
-  Design goals:
-  - zero build tooling (plain HTML/CSS/JS)
-  - works over SSH port-forwarding
-  - "real-time" without page reload: periodic refresh + event log polling
-
-  Security model (simple):
-  - user enters an x-api-key (stored in localStorage)
-  - all API calls include x-api-key header
-*/
+// =============================================================================
+// DOM Elements
+// =============================================================================
 
 const els = {
-  connPill: document.getElementById('connPill'),
-  baseUrl: document.getElementById('baseUrl'),
-  apiKey: document.getElementById('apiKey'),
-  saveKeyBtn: document.getElementById('saveKeyBtn'),
-  assetId: document.getElementById('assetId'),
-  autoRefresh: document.getElementById('autoRefresh'),
-  refreshEvery: document.getElementById('refreshEvery'),
-  refreshBtn: document.getElementById('refreshBtn'),
-
-  activeClaimId: document.getElementById('activeClaimId'),
-  activeState: document.getElementById('activeState'),
-  activeMeta: document.getElementById('activeMeta'),
-  revokeReason: document.getElementById('revokeReason'),
-  revokeBtn: document.getElementById('revokeBtn'),
-
-  decisionState: document.getElementById('decisionState'),
-  decisionMeta: document.getElementById('decisionMeta'),
-  decisionResetBtn: document.getElementById('decisionResetBtn'),
-
-  claimsBody: document.getElementById('claimsBody'),
-  log: document.getElementById('log'),
+    // Connection
+    baseUrl: document.getElementById('baseUrl'),
+    apiKey: document.getElementById('apiKey'),
+    connectBtn: document.getElementById('connectBtn'),
+    assetId: document.getElementById('assetId'),
+    loadAssetBtn: document.getElementById('loadAssetBtn'),
+    sseConnectBtn: document.getElementById('sseConnectBtn'),
+    sseDisconnectBtn: document.getElementById('sseDisconnectBtn'),
+    ssePill: document.getElementById('ssePill'),
+    connPill: document.getElementById('connPill'),
+    
+    // Active anchor
+    activeClaimId: document.getElementById('activeClaimId'),
+    activeState: document.getElementById('activeState'),
+    activeDetails: document.getElementById('activeDetails'),
+    revokeBtn: document.getElementById('revokeBtn'),
+    revokeReason: document.getElementById('revokeReason'),
+    
+    // Claims table
+    claimsBody: document.getElementById('claimsBody'),
+    
+    // Claim details
+    claimDetailsCard: document.getElementById('claimDetailsCard'),
+    claimDetailsContent: document.getElementById('claimDetailsContent'),
+    closeDetailsBtn: document.getElementById('closeDetailsBtn'),
+    
+    // Reject modal
+    rejectModal: document.getElementById('rejectModal'),
+    rejectClaimId: document.getElementById('rejectClaimId'),
+    rejectReason: document.getElementById('rejectReason'),
+    confirmRejectBtn: document.getElementById('confirmRejectBtn'),
+    cancelRejectBtn: document.getElementById('cancelRejectBtn'),
+    
+    // Event log
+    eventLog: document.getElementById('eventLog'),
+    clearLogBtn: document.getElementById('clearLogBtn'),
+    eventCount: document.getElementById('eventCount')
 };
 
-const STORAGE = {
-  apiKey: 'mr_registry_api_key',
-  assetId: 'mr_registry_asset_id',
-  autoRefresh: 'mr_registry_auto_refresh',
-  refreshEvery: 'mr_registry_refresh_every',
-};
+// =============================================================================
+// State
+// =============================================================================
 
 const state = {
-  healthTimer: null,
-  refreshTimer: null,
-  eventsTimer: null,
-  lastEventsSeen: 0,
-  lastRenderKey: '',
+    eventSource: null,
+    connected: false,
+    currentAssetId: null,
+    pendingRejectClaimId: null,
+    eventCounter: 0
 };
 
+const STORAGE_KEYS = {
+    apiKey: 'mr_registry_api_key',
+    assetId: 'mr_registry_asset_id'
+};
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
 function baseUrl() {
-  return window.location.origin;
+    return window.location.origin;
 }
 
 function getApiKey() {
-  return (els.apiKey.value || '').trim();
+    return (els.apiKey.value || '').trim();
 }
 
 function headers() {
-  const key = getApiKey();
-  return {
-    'Content-Type': 'application/json',
-    'x-api-key': key,
-  };
-}
-
-function logLine(msg, level = 'ok') {
-  const ts = new Date().toISOString();
-  const div = document.createElement('div');
-  div.className = 'entry';
-  div.innerHTML = `<span class="ts">${ts}</span> <span class="${level}">${escapeHtml(msg)}</span>`;
-  els.log.appendChild(div);
-  els.log.scrollTop = els.log.scrollHeight;
+    return {
+        'Content-Type': 'application/json',
+        'x-api-key': getApiKey()
+    };
 }
 
 function escapeHtml(s) {
-  return String(s)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
-function setConn(ok, detail) {
-  els.connPill.textContent = ok ? 'connected' : 'disconnected';
-  els.connPill.classList.toggle('good', ok);
-  els.connPill.classList.toggle('bad', !ok);
-  els.connPill.title = detail || '';
+function formatTime(isoString) {
+    if (!isoString) return '—';
+    const d = new Date(isoString);
+    return d.toLocaleTimeString();
 }
+
+function badgeClass(state) {
+    if (!state) return 'warn';
+    const s = state.toUpperCase();
+    if (s === 'ACTIVE') return 'good';
+    if (s === 'REJECTED' || s === 'REVOKED') return 'bad';
+    if (s === 'PROPOSED' || s === 'CONFLICT' || s === 'SUPERSEDED') return 'warn';
+    return 'info';
+}
+
+// =============================================================================
+// API Functions
+// =============================================================================
 
 async function fetchJson(path, options = {}) {
-  const url = `${baseUrl()}${path}`;
-  const res = await fetch(url, options);
-  const txt = await res.text();
-  let data;
-  try {
-    data = txt ? JSON.parse(txt) : null;
-  } catch (e) {
-    throw new Error(`Non-JSON response from ${path}: ${txt.slice(0, 120)}`);
-  }
-  if (!res.ok) {
-    const err = (data && (data.error || data.message)) ? (data.error || data.message) : `HTTP ${res.status}`;
-    throw new Error(err);
-  }
-  return data;
+    const url = `${baseUrl()}${path}`;
+    const res = await fetch(url, options);
+    const txt = await res.text();
+    
+    let data;
+    try {
+        data = txt ? JSON.parse(txt) : null;
+    } catch (e) {
+        throw new Error(`Non-JSON response: ${txt.slice(0, 100)}`);
+    }
+    
+    if (!res.ok) {
+        const err = data?.error || data?.message || `HTTP ${res.status}`;
+        throw new Error(err);
+    }
+    
+    return data;
 }
 
-async function refreshHealth() {
-  try {
-    const data = await fetchJson('/health');
-    setConn(true, `${data.status} | postgres=${data.postgres} | fabric=${data.fabric} | mock=${data.fabric_mock}`);
-  } catch (e) {
-    setConn(false, e.message);
-  }
+async function checkHealth() {
+    try {
+        const data = await fetchJson('/health');
+        els.connPill.textContent = `API: ${data.status}`;
+        els.connPill.className = 'pill ' + (data.status === 'healthy' ? 'good' : 'warn');
+        state.connected = true;
+        return data;
+    } catch (e) {
+        els.connPill.textContent = 'API: error';
+        els.connPill.className = 'pill bad';
+        state.connected = false;
+        logEvent('system', `Health check failed: ${e.message}`);
+        return null;
+    }
 }
 
-function uiSetActive({ claim_id, stateText, metaText }) {
-  els.activeClaimId.textContent = claim_id || '—';
-  els.activeState.innerHTML = `<span class="badge ${badgeClass(stateText)}">${stateText || '—'}</span>`;
-  els.activeMeta.textContent = metaText || '';
-
-  const canRevoke = !!claim_id && (stateText === 'ACTIVE');
-  els.revokeBtn.disabled = !canRevoke;
+async function loadAssetData(assetId) {
+    if (!assetId) {
+        els.claimsBody.innerHTML = '<tr><td colspan="7" class="muted">Enter an asset_id</td></tr>';
+        updateActiveDisplay(null);
+        return;
+    }
+    
+    try {
+        const data = await fetchJson(`/admin/api/asset/${encodeURIComponent(assetId)}`, {
+            headers: headers()
+        });
+        
+        updateActiveDisplay(data.active);
+        renderClaimsTable(data.claims || [], assetId);
+        logEvent('system', `Loaded asset: ${assetId} (${(data.claims || []).length} claims)`);
+    } catch (e) {
+        logEvent('system', `Load failed: ${e.message}`, 'error');
+    }
 }
 
-function badgeClass(stateText) {
-  if (!stateText) return 'warn';
-  const s = String(stateText).toUpperCase();
-  if (s === 'ACTIVE' || s === 'APPROVED') return 'good';
-  if (s === 'REJECTED' || s === 'REVOKED') return 'bad';
-  if (s === 'PROPOSED' || s === 'CONFLICT') return 'warn';
-  return 'warn';
-}
+// =============================================================================
+// UI Update Functions
+// =============================================================================
 
-function uiSetDecision(decision) {
-  if (!decision) {
-    els.decisionState.innerHTML = `<span class="badge warn">none</span>`;
-    els.decisionMeta.textContent = '';
-    els.decisionResetBtn.disabled = true;
-    return;
-  }
-  els.decisionState.innerHTML = `<span class="badge ${badgeClass(decision.decision)}">${decision.decision}</span>`;
-  const parts = [];
-  if (decision.claim_id) parts.push(`claim=${decision.claim_id}`);
-  if (decision.decided_by) parts.push(`by=${decision.decided_by}`);
-  if (decision.decided_at) parts.push(`at=${decision.decided_at}`);
-  if (decision.reason) parts.push(`reason=${decision.reason}`);
-  els.decisionMeta.textContent = parts.join(' | ');
-  els.decisionResetBtn.disabled = false;
+function updateActiveDisplay(active) {
+    if (!active) {
+        els.activeClaimId.textContent = '—';
+        els.activeState.innerHTML = '<span class="badge warn">none</span>';
+        els.activeDetails.textContent = 'No active anchor';
+        els.revokeBtn.disabled = true;
+        return;
+    }
+    
+    els.activeClaimId.textContent = active.claimId || '—';
+    els.activeState.innerHTML = `<span class="badge ${badgeClass(active.state)}">${active.state}</span>`;
+    
+    const details = [
+        `publisher: ${active.publisherId || '—'}`,
+        `endorsements: ${active.endorsementCount || 0}`,
+        `activated: ${formatTime(active.activatedAt)}`
+    ];
+    els.activeDetails.textContent = details.join(' | ');
+    
+    els.revokeBtn.disabled = active.state !== 'ACTIVE';
 }
 
 function renderClaimsTable(claims, assetId) {
-  if (!Array.isArray(claims) || claims.length === 0) {
-    els.claimsBody.innerHTML = `<tr><td colspan="7" class="muted">No claims found for ${escapeHtml(assetId)}.</td></tr>`;
-    return;
-  }
+    if (!claims || claims.length === 0) {
+        els.claimsBody.innerHTML = `<tr><td colspan="7" class="muted">No claims for ${escapeHtml(assetId)}</td></tr>`;
+        return;
+    }
+    
+    // Sort by createdAt descending
+    claims.sort((a, b) => {
+        const ta = new Date(a.createdAt || 0).getTime();
+        const tb = new Date(b.createdAt || 0).getTime();
+        return tb - ta;
+    });
+    
+    const rows = claims.map(c => {
+        const claimId = c.claimId || '';
+        const stateText = c.state || 'UNKNOWN';
+        const conflict = c.conflictClassification || '—';
+        const endorsements = c.endorsementCount || 0;
+        const publisher = c.publisherId || '—';
+        const created = formatTime(c.createdAt);
+        
+        const canApprove = ['PROPOSED', 'CONFLICT'].includes(stateText);
+        const canReject = ['PROPOSED', 'CONFLICT'].includes(stateText);
+        const canReopen = stateText === 'REJECTED';
+        
+        return `
+            <tr data-claim-id="${escapeHtml(claimId)}">
+                <td class="mono" style="font-size: 10px;">${escapeHtml(claimId)}</td>
+                <td><span class="badge ${badgeClass(stateText)}">${stateText}</span></td>
+                <td>${escapeHtml(conflict)}</td>
+                <td>${endorsements}</td>
+                <td class="mono" style="font-size: 10px;">${escapeHtml(publisher)}</td>
+                <td>${created}</td>
+                <td class="actions">
+                    <button class="btn small good" data-action="approve" data-claim="${escapeHtml(claimId)}" ${canApprove ? '' : 'disabled'}>Approve</button>
+                    <button class="btn small danger" data-action="reject" data-claim="${escapeHtml(claimId)}" ${canReject ? '' : 'disabled'}>Reject</button>
+                    ${canReopen ? `<button class="btn small" data-action="reopen" data-claim="${escapeHtml(claimId)}">Reopen</button>` : ''}
+                    <button class="btn small" data-action="details" data-claim="${escapeHtml(claimId)}">Details</button>
+                </td>
+            </tr>
+        `;
+    });
+    
+    els.claimsBody.innerHTML = rows.join('');
+}
 
-  // newest first if timestamps exist
-  claims.sort((a, b) => {
-    const ta = Date.parse(a.createdAt || a.activatedAt || 0) || 0;
-    const tb = Date.parse(b.createdAt || b.activatedAt || 0) || 0;
-    return tb - ta;
-  });
+// =============================================================================
+// SSE (Server-Sent Events)
+// =============================================================================
 
-  const rows = claims.map(c => {
-    const claimId = c.claimId || c.claim_id || '';
-    const stateText = c.state || '';
-    const cc = c.conflictClassification || c.conflict_classification || '—';
-    const ecount = Number(c.endorsementCount || c.endorsement_count || 0);
-    const created = c.createdAt || '—';
-    const publisher = c.publisherId || c.publisher_id || '—';
+function connectSSE() {
+    const assetId = state.currentAssetId;
+    const apiKey = getApiKey();
+    
+    if (!apiKey) {
+        logEvent('system', 'API key required for SSE', 'error');
+        return;
+    }
+    
+    disconnectSSE();
+    
+    let url = `${baseUrl()}/admin/api/events/stream`;
+    if (assetId) {
+        url += `?asset_id=${encodeURIComponent(assetId)}`;
+    }
+    
+    // Note: EventSource doesn't support custom headers, so we'll poll if needed
+    // For this demo, we use a workaround with fetch + ReadableStream
+    
+    logEvent('system', `Connecting SSE...${assetId ? ` (filter: ${assetId})` : ''}`);
+    
+    // Use fetch for SSE with headers
+    startSSEWithFetch(url);
+}
 
-    const canEndorse = (stateText === 'PROPOSED' || stateText === 'CONFLICT') && !!claimId;
+async function startSSEWithFetch(url) {
+    try {
+        const response = await fetch(url, {
+            headers: headers(),
+            cache: 'no-store'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        
+        els.ssePill.textContent = 'SSE: connected';
+        els.ssePill.className = 'pill good';
+        els.sseConnectBtn.disabled = true;
+        els.sseDisconnectBtn.disabled = false;
+        document.body.classList.add('sse-connected');
+        
+        state.eventSource = { reader, active: true };
+        logEvent('system', 'SSE connected');
+        
+        while (state.eventSource?.active) {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+                logEvent('system', 'SSE stream ended');
+                break;
+            }
+            
+            buffer += decoder.decode(value, { stream: true });
+            
+            // Process complete events (data: {...}\n\n)
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        handleSSEEvent(data);
+                    } catch (e) {
+                        console.error('SSE parse error:', e);
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        logEvent('system', `SSE error: ${e.message}`, 'error');
+    }
+    
+    disconnectSSE();
+}
 
-    return `
-      <tr>
-        <td class="mono">${escapeHtml(claimId)}</td>
-        <td><span class="badge ${badgeClass(stateText)}">${escapeHtml(stateText)}</span></td>
-        <td>${escapeHtml(cc)}</td>
-        <td>${ecount}</td>
-        <td class="mono">${escapeHtml(publisher)}</td>
-        <td class="mono">${escapeHtml(created)}</td>
-        <td class="actions">
-          <button class="btn sm" data-act="endorse" data-claim="${escapeHtml(claimId)}" ${canEndorse ? '' : 'disabled'}>Approve (endorse)</button>
-          <button class="btn sm" data-act="reject" data-claim="${escapeHtml(claimId)}" ${claimId ? '' : 'disabled'}>Reject</button>
-          <button class="btn sm" data-act="copy" data-claim="${escapeHtml(claimId)}" ${claimId ? '' : 'disabled'}>Copy ID</button>
-        </td>
-      </tr>
+function disconnectSSE() {
+    if (state.eventSource) {
+        state.eventSource.active = false;
+        if (state.eventSource.reader) {
+            state.eventSource.reader.cancel().catch(() => {});
+        }
+        state.eventSource = null;
+    }
+    
+    els.ssePill.textContent = 'SSE: disconnected';
+    els.ssePill.className = 'pill';
+    els.sseConnectBtn.disabled = false;
+    els.sseDisconnectBtn.disabled = true;
+    document.body.classList.remove('sse-connected');
+}
+
+function handleSSEEvent(event) {
+    const type = event.type || 'UNKNOWN';
+    
+    // Log the event
+    const typeClass = type.toLowerCase().replace('claim_', '');
+    logEvent(typeClass, formatEventMessage(event));
+    
+    // Refresh data on relevant events
+    if (['CLAIM_PROPOSED', 'CLAIM_ENDORSED', 'CLAIM_ACTIVATED', 
+         'CLAIM_REJECTED', 'CLAIM_REVOKED', 'CLAIM_REOPENED', 
+         'ACTIVE_CHANGED'].includes(type)) {
+        
+        // Only refresh if event is for our current asset
+        if (!state.currentAssetId || event.assetId === state.currentAssetId) {
+            loadAssetData(state.currentAssetId);
+        }
+    }
+}
+
+function formatEventMessage(event) {
+    const type = event.type || 'UNKNOWN';
+    const parts = [];
+    
+    if (event.assetId) parts.push(`asset=${event.assetId}`);
+    if (event.claimId) parts.push(`claim=${event.claimId.slice(0, 12)}...`);
+    if (event.state) parts.push(`state=${event.state}`);
+    if (event.supervisorId) parts.push(`by=${event.supervisorId}`);
+    if (event.reason) parts.push(`reason="${event.reason}"`);
+    
+    return `${type}: ${parts.join(', ')}`;
+}
+
+// =============================================================================
+// Event Log
+// =============================================================================
+
+function logEvent(type, message, level = 'info') {
+    state.eventCounter++;
+    
+    const ts = new Date().toLocaleTimeString();
+    const typeClass = type.toLowerCase();
+    
+    const entry = document.createElement('div');
+    entry.className = 'entry';
+    entry.innerHTML = `
+        <span class="ts">${ts}</span>
+        <span class="type ${typeClass}">[${type.toUpperCase()}]</span>
+        <span class="${level === 'error' ? 'bad' : ''}">${escapeHtml(message)}</span>
     `;
-  });
-
-  els.claimsBody.innerHTML = rows.join('');
-}
-
-async function refreshForAsset(assetId) {
-  const key = getApiKey();
-  if (!key) {
-    uiSetActive({ claim_id: '', stateText: '', metaText: 'Enter x-api-key first.' });
-    uiSetDecision(null);
-    els.claimsBody.innerHTML = `<tr><td colspan="7" class="muted">Enter x-api-key first.</td></tr>`;
-    return;
-  }
-
-  if (!assetId) {
-    uiSetActive({ claim_id: '', stateText: '', metaText: '' });
-    uiSetDecision(null);
-    els.claimsBody.innerHTML = `<tr><td colspan="7" class="muted">Enter an asset_id to view claims.</td></tr>`;
-    return;
-  }
-
-  try {
-    // Claims list
-    const claimsResp = await fetchJson(`/assets/${encodeURIComponent(assetId)}/claims`, {
-      method: 'GET',
-      headers: headers(),
-    });
-
-    // Active resolve (may be null)
-    const resolveResp = await fetchJson(`/assets/${encodeURIComponent(assetId)}/resolve`, {
-      method: 'GET',
-      headers: headers(),
-    });
-
-    // Local supervisor decision (optional)
-    const decisionResp = await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}`, {
-      method: 'GET',
-      headers: headers(),
-    });
-
-    // Render
-    const activeClaimId = resolveResp.claim_id || '';
-    const activeState = resolveResp.state || (activeClaimId ? 'UNKNOWN' : 'NONE');
-    const meta = activeClaimId
-      ? `payload_verified=${resolveResp.payload_verified} | activated_at=${resolveResp.activated_at || '—'}`
-      : (resolveResp.message || '');
-
-    uiSetActive({ claim_id: activeClaimId, stateText: activeState, metaText: meta });
-    uiSetDecision(decisionResp.decision);
-    renderClaimsTable(claimsResp.claims || [], assetId);
-
-    // Avoid spamming logs: only log when something meaningfully changed.
-    const renderKey = JSON.stringify({
-      assetId,
-      activeClaimId,
-      activeState,
-      decision: decisionResp.decision ? decisionResp.decision.decision : null,
-      claimsCount: (claimsResp.claims || []).length,
-      lastClaim: (claimsResp.claims || [])[0]?.claimId || null,
-    });
-
-    if (state.lastRenderKey !== renderKey) {
-      state.lastRenderKey = renderKey;
-      logLine(`Synced asset=${assetId} | active=${activeClaimId || 'none'} | claims=${(claimsResp.claims || []).length}`, 'ok');
+    
+    els.eventLog.appendChild(entry);
+    els.eventLog.scrollTop = els.eventLog.scrollHeight;
+    els.eventCount.textContent = `${state.eventCounter} events`;
+    
+    // Keep only last 100 entries
+    while (els.eventLog.children.length > 100) {
+        els.eventLog.removeChild(els.eventLog.firstChild);
     }
-  } catch (e) {
-    logLine(`Refresh failed: ${e.message}`, 'err');
-  }
 }
 
-async function doEndorse(assetId, claimId) {
-  try {
-    const resp = await fetchJson(`/claims/${encodeURIComponent(claimId)}/endorse`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({}),
-    });
+// =============================================================================
+// Action Handlers
+// =============================================================================
 
-    const newState = resp.new_state || resp.state || 'UNKNOWN';
-    logLine(`Endorsed ${claimId} → state=${newState} endorsements=${resp.endorsement_count}`, newState === 'ACTIVE' ? 'ok' : 'warn');
-
-    // If it becomes active, mark local decision as approved too (helps Unity later).
-    if (newState === 'ACTIVE') {
-      await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}/approve`, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ claim_id: claimId, reason: 'endorsed via supervisor UI' }),
-      });
+async function handleApprove(claimId) {
+    const assetId = state.currentAssetId;
+    if (!assetId || !claimId) return;
+    
+    try {
+        logEvent('system', `Approving ${claimId}...`);
+        
+        const result = await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}/approve`, {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({ claim_id: claimId, reason: 'Approved by supervisor' })
+        });
+        
+        const newState = result.claim?.state || 'UNKNOWN';
+        logEvent('endorsed', `Claim ${claimId} → ${newState}`);
+        
+        await loadAssetData(assetId);
+    } catch (e) {
+        logEvent('system', `Approve failed: ${e.message}`, 'error');
     }
-
-    await refreshForAsset(assetId);
-  } catch (e) {
-    logLine(`Approve failed (${claimId}): ${e.message}`, 'err');
-  }
 }
 
-async function doReject(assetId, claimId) {
-  try {
-    const reason = prompt('Reject reason (optional):', 'rejected by supervisor') || '';
-    await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}/reject`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({ claim_id: claimId, reason }),
-    });
-
-    logLine(`Rejected ${claimId} (local decision)`, 'warn');
-    await refreshForAsset(assetId);
-  } catch (e) {
-    logLine(`Reject failed (${claimId}): ${e.message}`, 'err');
-  }
+function showRejectModal(claimId) {
+    state.pendingRejectClaimId = claimId;
+    els.rejectClaimId.textContent = claimId;
+    els.rejectReason.value = '';
+    els.rejectModal.style.display = 'block';
+    els.rejectReason.focus();
 }
 
-async function doRevokeActive(assetId) {
-  const activeClaimId = els.activeClaimId.textContent.trim();
-  if (!activeClaimId || activeClaimId === '—') return;
-
-  const reason = (els.revokeReason.value || '').trim() || 'revoked by supervisor UI';
-  try {
-    await fetchJson(`/assets/${encodeURIComponent(assetId)}/revoke`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({ reason, claim_id: activeClaimId }),
-    });
-    logLine(`Revoked ACTIVE claim ${activeClaimId} for asset=${assetId}`, 'warn');
-
-    // Clear local decision for cleanliness
-    await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}/reset`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({}),
-    });
-
-    await refreshForAsset(assetId);
-  } catch (e) {
-    logLine(`Revoke failed: ${e.message}`, 'err');
-  }
+function hideRejectModal() {
+    state.pendingRejectClaimId = null;
+    els.rejectModal.style.display = 'none';
 }
 
-async function doDecisionReset(assetId) {
-  try {
-    await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}/reset`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({}),
-    });
-    logLine(`Decision reset for asset=${assetId}`, 'ok');
-    await refreshForAsset(assetId);
-  } catch (e) {
-    logLine(`Decision reset failed: ${e.message}`, 'err');
-  }
-}
-
-async function pollEvents() {
-  const key = getApiKey();
-  if (!key) return;
-
-  try {
-    const resp = await fetchJson('/admin/api/events?limit=30', {
-      method: 'GET',
-      headers: headers(),
-    });
-
-    const events = resp.events || [];
-    // naive de-dupe: log only new events since last poll
-    if (events.length > state.lastEventsSeen) {
-      const newOnes = events.slice(Math.max(0, events.length - (events.length - state.lastEventsSeen)));
-      newOnes.forEach(evt => {
-        const msg = evt.type === 'DECISION'
-          ? `Decision: ${evt.asset_id} → ${evt.decision} (claim=${evt.claim_id || '—'})`
-          : (evt.type === 'DECISION_RESET'
-            ? `Decision reset: ${evt.asset_id}`
-            : `${evt.type}`);
-        logLine(msg, evt.type === 'DECISION' ? 'warn' : 'ok');
-      });
+async function handleReject() {
+    const claimId = state.pendingRejectClaimId;
+    const reason = (els.rejectReason.value || '').trim();
+    const assetId = state.currentAssetId;
+    
+    if (!claimId || !assetId) return;
+    
+    if (!reason) {
+        alert('Rejection reason is required (will be recorded on-chain)');
+        return;
     }
-    state.lastEventsSeen = events.length;
-  } catch (e) {
-    // don't spam: ignore event poll failures
-  }
+    
+    try {
+        logEvent('system', `Rejecting ${claimId} with reason: "${reason}"`);
+        
+        const result = await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}/reject`, {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({ claim_id: claimId, reason })
+        });
+        
+        logEvent('rejected', `Claim ${claimId} REJECTED on-chain`);
+        hideRejectModal();
+        await loadAssetData(assetId);
+    } catch (e) {
+        logEvent('system', `Reject failed: ${e.message}`, 'error');
+    }
 }
 
-function startAutoRefresh() {
-  stopAutoRefresh();
-
-  const every = Math.max(500, Math.min(60000, Number(els.refreshEvery.value) || 1500));
-  const enabled = !!els.autoRefresh.checked;
-
-  localStorage.setItem(STORAGE.autoRefresh, enabled ? '1' : '0');
-  localStorage.setItem(STORAGE.refreshEvery, String(every));
-
-  if (!enabled) return;
-
-  state.refreshTimer = setInterval(() => {
-    const assetId = (els.assetId.value || '').trim();
-    refreshForAsset(assetId);
-  }, every);
+async function handleReopen(claimId) {
+    const assetId = state.currentAssetId;
+    if (!assetId || !claimId) return;
+    
+    const reason = prompt('Reopen reason (optional):') || '';
+    
+    try {
+        logEvent('system', `Reopening ${claimId}...`);
+        
+        const result = await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}/reopen`, {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({ claim_id: claimId, reason })
+        });
+        
+        logEvent('system', `Claim ${claimId} reopened → PROPOSED`);
+        await loadAssetData(assetId);
+    } catch (e) {
+        logEvent('system', `Reopen failed: ${e.message}`, 'error');
+    }
 }
 
-function stopAutoRefresh() {
-  if (state.refreshTimer) clearInterval(state.refreshTimer);
-  state.refreshTimer = null;
+async function handleRevoke() {
+    const assetId = state.currentAssetId;
+    const reason = (els.revokeReason.value || '').trim();
+    
+    if (!assetId) return;
+    
+    if (!reason) {
+        alert('Revocation reason is required');
+        els.revokeReason.focus();
+        return;
+    }
+    
+    if (!confirm(`Revoke the ACTIVE anchor for "${assetId}"?\n\nReason: ${reason}`)) {
+        return;
+    }
+    
+    try {
+        logEvent('system', `Revoking active anchor for ${assetId}...`);
+        
+        const result = await fetchJson(`/admin/api/decision/${encodeURIComponent(assetId)}/revoke`, {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({ reason })
+        });
+        
+        logEvent('revoked', `Active anchor revoked: ${result.claim?.claimId}`);
+        els.revokeReason.value = '';
+        await loadAssetData(assetId);
+    } catch (e) {
+        logEvent('system', `Revoke failed: ${e.message}`, 'error');
+    }
 }
 
-function initFromStorage() {
-  els.baseUrl.value = baseUrl();
-
-  const key = localStorage.getItem(STORAGE.apiKey) || '';
-  const assetId = localStorage.getItem(STORAGE.assetId) || '';
-  const auto = localStorage.getItem(STORAGE.autoRefresh);
-  const every = localStorage.getItem(STORAGE.refreshEvery);
-
-  if (key) els.apiKey.value = key;
-  if (assetId) els.assetId.value = assetId;
-  if (auto !== null) els.autoRefresh.checked = auto === '1';
-  if (every) els.refreshEvery.value = every;
+async function showClaimDetails(claimId) {
+    try {
+        const data = await fetchJson(`/admin/api/claim/${encodeURIComponent(claimId)}`, {
+            headers: headers()
+        });
+        
+        const claim = data.claim || {};
+        const history = data.history || [];
+        
+        let html = `
+            <div class="kv"><div class="k">Claim ID</div><div class="v mono">${escapeHtml(claim.claimId)}</div></div>
+            <div class="kv"><div class="k">Asset ID</div><div class="v mono">${escapeHtml(claim.assetId)}</div></div>
+            <div class="kv"><div class="k">State</div><div class="v"><span class="badge ${badgeClass(claim.state)}">${claim.state}</span></div></div>
+            <div class="kv"><div class="k">Publisher</div><div class="v mono">${escapeHtml(claim.publisherId)}</div></div>
+            <div class="kv"><div class="k">Created</div><div class="v">${claim.createdAt}</div></div>
+            <div class="kv"><div class="k">Endorsements</div><div class="v">${claim.endorsementCount} (${(claim.endorsers || []).join(', ') || 'none'})</div></div>
+            <div class="kv"><div class="k">Conflict</div><div class="v">${claim.conflictClassification} (distance: ${claim.conflictDistance?.toFixed(3) || 'N/A'})</div></div>
+        `;
+        
+        if (claim.state === 'REJECTED') {
+            html += `
+                <div class="kv"><div class="k">Rejected By</div><div class="v mono">${escapeHtml(claim.rejectedBy)}</div></div>
+                <div class="kv"><div class="k">Rejected At</div><div class="v">${claim.rejectedAt}</div></div>
+                <div class="kv"><div class="k">Reason</div><div class="v">${escapeHtml(claim.rejectionReason)}</div></div>
+            `;
+        }
+        
+        if (claim.state === 'REVOKED') {
+            html += `
+                <div class="kv"><div class="k">Revoked By</div><div class="v mono">${escapeHtml(claim.revokedBy)}</div></div>
+                <div class="kv"><div class="k">Revoked At</div><div class="v">${claim.revokedAt}</div></div>
+                <div class="kv"><div class="k">Reason</div><div class="v">${escapeHtml(claim.revocationReason)}</div></div>
+            `;
+        }
+        
+        if (claim.poseSummary) {
+            html += `
+                <div class="kv"><div class="k">Pose</div><div class="v mono">x=${claim.poseSummary.x}, y=${claim.poseSummary.y}, z=${claim.poseSummary.z}</div></div>
+            `;
+        }
+        
+        if (history.length > 0) {
+            html += `<h3 style="margin-top: 16px;">History (${history.length} changes)</h3>`;
+            html += '<div style="max-height: 150px; overflow-y: auto; font-size: 11px;">';
+            history.slice(0, 10).forEach(h => {
+                html += `<div class="mono" style="margin-bottom: 4px;">${h.timestamp} - ${h.value?.state || 'unknown'} (tx: ${h.txId?.slice(0, 8)}...)</div>`;
+            });
+            html += '</div>';
+        }
+        
+        els.claimDetailsContent.innerHTML = html;
+        els.claimDetailsCard.style.display = 'block';
+    } catch (e) {
+        logEvent('system', `Details failed: ${e.message}`, 'error');
+    }
 }
+
+// =============================================================================
+// Event Listeners
+// =============================================================================
 
 function wireEvents() {
-  els.saveKeyBtn.addEventListener('click', () => {
-    localStorage.setItem(STORAGE.apiKey, getApiKey());
-    logLine('Saved x-api-key', 'ok');
-    refreshForAsset((els.assetId.value || '').trim());
-  });
+    // Connect button
+    els.connectBtn.addEventListener('click', async () => {
+        localStorage.setItem(STORAGE_KEYS.apiKey, getApiKey());
+        await checkHealth();
+        logEvent('system', 'API key saved');
+    });
+    
+    // Load asset
+    els.loadAssetBtn.addEventListener('click', () => {
+        const assetId = (els.assetId.value || '').trim();
+        localStorage.setItem(STORAGE_KEYS.assetId, assetId);
+        state.currentAssetId = assetId;
+        loadAssetData(assetId);
+        
+        // Reconnect SSE with new filter
+        if (state.eventSource) {
+            connectSSE();
+        }
+    });
+    
+    // Asset ID enter key
+    els.assetId.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            els.loadAssetBtn.click();
+        }
+    });
+    
+    // SSE connect/disconnect
+    els.sseConnectBtn.addEventListener('click', connectSSE);
+    els.sseDisconnectBtn.addEventListener('click', disconnectSSE);
+    
+    // Revoke button
+    els.revokeBtn.addEventListener('click', handleRevoke);
+    
+    // Claims table actions
+    els.claimsBody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        
+        const action = btn.dataset.action;
+        const claimId = btn.dataset.claim;
+        
+        if (!claimId) return;
+        
+        switch (action) {
+            case 'approve':
+                handleApprove(claimId);
+                break;
+            case 'reject':
+                showRejectModal(claimId);
+                break;
+            case 'reopen':
+                handleReopen(claimId);
+                break;
+            case 'details':
+                showClaimDetails(claimId);
+                break;
+        }
+    });
+    
+    // Reject modal
+    els.confirmRejectBtn.addEventListener('click', handleReject);
+    els.cancelRejectBtn.addEventListener('click', hideRejectModal);
+    
+    // Close details
+    els.closeDetailsBtn.addEventListener('click', () => {
+        els.claimDetailsCard.style.display = 'none';
+    });
+    
+    // Clear log
+    els.clearLogBtn.addEventListener('click', () => {
+        els.eventLog.innerHTML = '';
+        state.eventCounter = 0;
+        els.eventCount.textContent = '0 events';
+    });
+}
 
-  els.assetId.addEventListener('change', () => {
-    const assetId = (els.assetId.value || '').trim();
-    localStorage.setItem(STORAGE.assetId, assetId);
-    refreshForAsset(assetId);
-  });
+// =============================================================================
+// Initialization
+// =============================================================================
 
-  els.refreshBtn.addEventListener('click', () => {
-    refreshForAsset((els.assetId.value || '').trim());
-  });
-
-  els.autoRefresh.addEventListener('change', () => startAutoRefresh());
-  els.refreshEvery.addEventListener('change', () => startAutoRefresh());
-
-  els.revokeBtn.addEventListener('click', () => {
-    const assetId = (els.assetId.value || '').trim();
-    if (!assetId) return;
-    if (!confirm(`Revoke ACTIVE anchor for ${assetId}?`)) return;
-    doRevokeActive(assetId);
-  });
-
-  els.decisionResetBtn.addEventListener('click', () => {
-    const assetId = (els.assetId.value || '').trim();
-    if (!assetId) return;
-    doDecisionReset(assetId);
-  });
-
-  els.claimsBody.addEventListener('click', async (evt) => {
-    const btn = evt.target.closest('button');
-    if (!btn) return;
-
-    const act = btn.getAttribute('data-act');
-    const claimId = btn.getAttribute('data-claim');
-    const assetId = (els.assetId.value || '').trim();
-
-    if (!assetId || !claimId) return;
-
-    if (act === 'endorse') {
-      await doEndorse(assetId, claimId);
-    } else if (act === 'reject') {
-      await doReject(assetId, claimId);
-    } else if (act === 'copy') {
-      try {
-        await navigator.clipboard.writeText(claimId);
-        logLine(`Copied claim id: ${claimId}`, 'ok');
-      } catch (e) {
-        logLine('Copy failed (clipboard permissions).', 'warn');
-      }
+async function init() {
+    // Set base URL
+    els.baseUrl.value = baseUrl();
+    
+    // Restore from localStorage
+    const savedKey = localStorage.getItem(STORAGE_KEYS.apiKey);
+    const savedAssetId = localStorage.getItem(STORAGE_KEYS.assetId);
+    
+    if (savedKey) els.apiKey.value = savedKey;
+    if (savedAssetId) {
+        els.assetId.value = savedAssetId;
+        state.currentAssetId = savedAssetId;
     }
-  });
+    
+    // Wire up event handlers
+    wireEvents();
+    
+    // Check health
+    await checkHealth();
+    
+    // Load initial data if we have an asset ID
+    if (state.currentAssetId && getApiKey()) {
+        await loadAssetData(state.currentAssetId);
+    }
+    
+    logEvent('system', 'Supervisor UI v2.0 initialized');
+    logEvent('system', 'Click "Connect SSE" for real-time updates');
 }
 
-async function boot() {
-  initFromStorage();
-  wireEvents();
-
-  logLine('Supervisor UI loaded', 'ok');
-  await refreshHealth();
-
-  // Health polling (connectivity indicator)
-  state.healthTimer = setInterval(refreshHealth, 5000);
-
-  // Events polling (small "push-like" log)
-  state.eventsTimer = setInterval(pollEvents, 1500);
-
-  // Initial asset refresh
-  await refreshForAsset((els.assetId.value || '').trim());
-
-  // Start auto refresh if enabled
-  startAutoRefresh();
-}
-
-boot();
+// Start
+init();
