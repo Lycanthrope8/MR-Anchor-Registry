@@ -418,18 +418,43 @@ async function startSSEWithFetch(url) {
             
             buffer += decoder.decode(value, { stream: true });
             
-            // Process complete events (data: {...}\n\n)
-            const lines = buffer.split('\n\n');
-            buffer = lines.pop() || '';
+            // Process complete SSE events (separated by \n\n)
+            const events = buffer.split('\n\n');
+            buffer = events.pop() || '';
             
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        handleSSEEvent(data);
-                    } catch (e) {
-                        console.error('SSE parse error:', e);
+            for (const eventBlock of events) {
+                if (!eventBlock.trim()) continue;
+                
+                const lines = eventBlock.split('\n');
+                let eventId = null;
+                let eventName = null;
+                let data = null;
+                
+                // Parse SSE format: id:, event:, data: lines
+                for (const line of lines) {
+                    if (line.startsWith('id: ')) {
+                        eventId = line.slice(4);
+                    } else if (line.startsWith('event: ')) {
+                        eventName = line.slice(7);
+                    } else if (line.startsWith('data: ')) {
+                        try {
+                            data = JSON.parse(line.slice(6));
+                        } catch (e) {
+                            console.error('SSE data parse error:', e);
+                        }
                     }
+                }
+                
+                // Handle the event if we have data
+                if (data) {
+                    // Ensure type is set (from event: line or data.type)
+                    if (!data.type && eventName) {
+                        data.type = eventName;
+                    }
+                    if (eventId && !data.eventId) {
+                        data.eventId = eventId;
+                    }
+                    handleSSEEvent(data);
                 }
             }
         }

@@ -289,6 +289,88 @@ router.post('/decision/:asset_id/reset', requireSupervisor, (req, res) => {
 // =============================================================================
 
 /**
+ * GET /admin/api/assets
+ * Get all assets with their latest state (for dashboard view)
+ */
+router.get('/assets', async (req, res) => {
+    try {
+        // Get all unique asset IDs from the event bus
+        const allEvents = sseEventBus.getRecentEvents(1000); // Get enough events to cover all assets
+        const assetIds = new Set();
+        
+        allEvents.forEach(event => {
+            if (event.assetId) {
+                assetIds.add(event.assetId);
+            }
+        });
+
+        // Fetch latest state for each asset
+        const assetPromises = Array.from(assetIds).map(async (assetId) => {
+            try {
+                const [active, claims] = await Promise.all([
+                    fabric.resolveAnchor(assetId),
+                    fabric.listClaims(assetId)
+                ]);
+
+                // Find the latest claim
+                let latestClaim = null;
+                let latestState = 'UNKNOWN';
+                
+                if (claims && claims.length > 0) {
+                    // Sort by createdAt descending
+                    claims.sort((a, b) => {
+                        const ta = new Date(a.createdAt || 0).getTime();
+                        const tb = new Date(b.createdAt || 0).getTime();
+                        return tb - ta;
+                    });
+                    latestClaim = claims[0];
+                    latestState = latestClaim.state || 'UNKNOWN';
+                }
+
+                return {
+                    asset_id: assetId,
+                    latest_state: latestState,
+                    latest_claim_id: latestClaim?.claimId || null,
+                    active_claim_id: active?.claimId || null,
+                    last_updated_at: latestClaim?.createdAt || nowIso()
+                };
+            } catch (error) {
+                logger.error(`Error fetching asset ${assetId}:`, error);
+                return {
+                    asset_id: assetId,
+                    latest_state: 'ERROR',
+                    latest_claim_id: null,
+                    active_claim_id: null,
+                    last_updated_at: nowIso()
+                };
+            }
+        });
+
+        const assets = await Promise.all(assetPromises);
+
+        // Sort by last_updated_at descending
+        assets.sort((a, b) => {
+            const ta = new Date(a.last_updated_at || 0).getTime();
+            const tb = new Date(b.last_updated_at || 0).getTime();
+            return tb - ta;
+        });
+
+        res.json({
+            success: true,
+            assets,
+            count: assets.length,
+            timestamp: nowIso()
+        });
+    } catch (error) {
+        logger.error('Assets list error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * GET /admin/api/asset/:asset_id
  * Get complete asset data for supervisor UI
  */
