@@ -53,32 +53,32 @@ This documentation teaches you:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           YOUR APPLICATION                                   │
+│                           YOUR APPLICATION                                  │
 │                    (Unity, Unreal, Web App, etc.)                           │
 └─────────────────────────────────────┬───────────────────────────────────────┘
                                       │ REST API (HTTP)
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              GATEWAY                                         │
-│                         (Node.js Express)                                    │
-│                                                                              │
-│  • Receives HTTP requests from applications                                  │
+│                              GATEWAY                                        │
+│                         (Node.js Express)                                   │
+│                                                                             │
+│  • Receives HTTP requests from applications                                 │
 │  • Validates API keys and roles (proposer/endorser/supervisor)              │
 │  • Translates REST calls to blockchain transactions                         │
 │  • Stores large payloads in PostgreSQL                                      │
-│  • Returns JSON responses                                                    │
+│  • Returns JSON responses                                                   │
 └──────────┬──────────────────────────────────────────┬───────────────────────┘
            │ gRPC (TLS)                               │ SQL
            ▼                                          ▼
 ┌──────────────────────────────────┐    ┌─────────────────────────────────────┐
-│     HYPERLEDGER FABRIC           │    │           POSTGRESQL                 │
-│     (Blockchain Network)          │    │        (Off-chain Storage)          │
-│                                   │    │                                     │
+│     HYPERLEDGER FABRIC           │    │           POSTGRESQL                │
+│     (Blockchain Network)         │    │        (Off-chain Storage)          │
+│                                  │    │                                     │
 │  ┌─────────────────────────────┐ │    │  Stores:                            │
-│  │       ORDERER               │ │    │  • Full pose data (position/rotation)│
+│  │       ORDERER               │ │    │  • Full pose data(position/rotation)│
 │  │   (Transaction Sequencing)  │ │    │  • Quality metrics                  │
 │  └─────────────────────────────┘ │    │  • Raw JSON payloads                │
-│                                   │    │                                     │
+│                                  │    │                                     │
 │  ┌─────────────┐ ┌─────────────┐ │    │  Why off-chain?                     │
 │  │  PEER ORG1  │ │  PEER ORG2  │ │    │  • Blockchain storage is expensive  │
 │  │  (Company A)│ │  (Company B)│ │    │  • Only hash stored on-chain        │
@@ -89,7 +89,7 @@ This documentation teaches you:
 │  │ │Contract)│ │ │ │Contract)│ │ │
 │  │ └─────────┘ │ │ └─────────┘ │ │
 │  └─────────────┘ └─────────────┘ │
-│                                   │
+│                                  │
 │  ┌─────────────────────────────┐ │
 │  │        LEDGER               │ │
 │  │  (Blockchain + World State) │ │
@@ -284,7 +284,7 @@ Our chaincode uses the default policy requiring endorsement from both Org1 and O
 ┌───────────────┐          ┌───────────────┐          ┌───────────────┐
 │   ORDERER     │          │   PEER ORG1   │          │   PEER ORG2   │
 │               │          │               │          │               │
-│ Port: 7050    │◀────────▶│ Port: 7051    │◀────────▶│ Port: 9051    │
+│ Port: 7050    │◀───────▶│ Port: 7051    │◀───────▶│ Port: 9051    │
 │ Admin: 7053   │  gossip  │ CC: 7052      │  gossip  │ CC: 9052      │
 │               │          │               │          │               │
 │ Orders TXs    │          │ Runs CC       │          │ Runs CC       │
@@ -720,7 +720,7 @@ Step 4: Response
                            │ (threshold met)
                            ▼
 ┌──────────────┐    ┌──────────────┐
-│  SUPERSEDED  │◀───│    ACTIVE    │
+│  SUPERSEDED  │◀──│    ACTIVE    │
 │              │    │              │
 │ Replaced by  │    │ Current      │
 │ newer anchor │    │ anchor for   │
@@ -1397,4 +1397,3 @@ tail -f ~/work/MR-Anchor-Registry/gateway.log
 ```
 
 ---
-
