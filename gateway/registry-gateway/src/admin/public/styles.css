@@ -10,6 +10,7 @@
     --bad: #f87171;
     --warn: #fbbf24;
     --btn: #1f2937;
+    --action: #f59e0b;
 }
 
 * {
@@ -94,10 +95,53 @@ body {
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
 }
 
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    margin-bottom: 12px;
+}
+
+.card-header h2 {
+    margin: 0;
+}
+
+.toggle-icon {
+    color: var(--muted);
+    transition: transform 0.2s;
+}
+
+.card-content.collapsed {
+    display: none;
+}
+
+.card-content.collapsed + .toggle-icon {
+    transform: rotate(-90deg);
+}
+
 h2 {
     margin: 0 0 12px;
     font-size: 15px;
     letter-spacing: 0.2px;
+}
+
+h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.detail-section {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+
+.detail-section:first-of-type {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
 }
 
 .grid {
@@ -283,6 +327,31 @@ textarea {
     word-break: break-all;
 }
 
+/* Dashboard specific styles */
+.dashboard-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.dashboard-table .dashboard-row {
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.dashboard-table .dashboard-row:hover {
+    background: rgba(96, 165, 250, 0.1);
+}
+
+.dashboard-table .dashboard-row.needs-action {
+    background: rgba(245, 158, 11, 0.05);
+}
+
+.dashboard-table .dashboard-row.needs-action:hover {
+    background: rgba(245, 158, 11, 0.12);
+}
+
 .tableWrap {
     overflow-x: auto;
     margin: 0 -16px;
@@ -348,6 +417,19 @@ textarea {
     border-color: rgba(96, 165, 250, 0.35);
     color: var(--accent);
     background: rgba(96, 165, 250, 0.1);
+}
+
+/* Needs Action badge - special styling */
+.badge.action-badge {
+    border-color: rgba(245, 158, 11, 0.5);
+    color: var(--action);
+    background: rgba(245, 158, 11, 0.15);
+    animation: glow 2s ease-in-out infinite;
+}
+
+@keyframes glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+    50% { box-shadow: 0 0 8px 2px rgba(245, 158, 11, 0.3); }
 }
 
 .actions {

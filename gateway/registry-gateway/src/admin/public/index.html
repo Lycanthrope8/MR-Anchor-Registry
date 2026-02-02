@@ -12,7 +12,7 @@
             <div class="dot"></div>
             <div>
                 <div class="title">MR Anchor Registry</div>
-                <div class="subtitle">Supervisor Control Panel v2.0</div>
+                <div class="subtitle">Supervisor Control Panel v2.1</div>
             </div>
         </div>
         <div class="right">
@@ -22,86 +22,106 @@
     </header>
 
     <main class="container">
-        <!-- Connection Settings -->
-        <section class="card">
-            <h2>🔐 Connection</h2>
-            <div class="grid two">
-                <label class="field">
-                    <span>Gateway URL</span>
-                    <input id="baseUrl" type="text" value="" readonly>
-                </label>
-                <label class="field">
-                    <span>Supervisor API Key</span>
-                    <div class="row">
-                        <input id="apiKey" type="password" placeholder="supervisor-key-001">
-                        <button class="btn" id="connectBtn">Connect</button>
-                    </div>
-                </label>
+        <!-- Connection Settings (collapsed by default) -->
+        <section class="card" id="connectionCard">
+            <div class="card-header" onclick="toggleCard('connectionContent')">
+                <h2>🔐 Connection</h2>
+                <span class="toggle-icon">▼</span>
             </div>
-            <div class="grid two">
-                <label class="field">
-                    <span>Asset ID</span>
-                    <div class="row">
-                        <input id="assetId" type="text" placeholder="e.g., chair_TAG_12">
-                        <button class="btn" id="loadAssetBtn">Load</button>
-                    </div>
-                </label>
-                <div class="field">
-                    <span>SSE Connection</span>
-                    <div class="row">
-                        <button class="btn primary" id="sseConnectBtn">Connect SSE</button>
-                        <button class="btn" id="sseDisconnectBtn" disabled>Disconnect</button>
-                    </div>
+            <div id="connectionContent" class="card-content">
+                <div class="grid two">
+                    <label class="field">
+                        <span>Gateway URL</span>
+                        <input id="baseUrl" type="text" value="" readonly>
+                    </label>
+                    <label class="field">
+                        <span>Supervisor API Key</span>
+                        <div class="row">
+                            <input id="apiKey" type="password" placeholder="supervisor-key-001">
+                            <button class="btn" id="connectBtn">Connect</button>
+                        </div>
+                    </label>
                 </div>
-            </div>
-            <div class="hint">
-                Real-time updates via Server-Sent Events. No manual refresh needed once SSE is connected.
             </div>
         </section>
 
-        <!-- Active Anchor -->
-        <section class="card">
-            <h2>📍 Active Anchor</h2>
-            <div class="grid two">
-                <div class="kv">
-                    <div class="k">Claim ID</div>
-                    <div class="v mono" id="activeClaimId">—</div>
-                </div>
-                <div class="kv">
-                    <div class="k">State</div>
-                    <div class="v" id="activeState"><span class="badge warn">none</span></div>
-                </div>
+        <!-- Asset Dashboard (NEW - default view) -->
+        <section class="card" id="dashboardCard">
+            <h2>📊 All Assets Dashboard</h2>
+            <div class="dashboard-actions">
+                <button class="btn primary" id="refreshDashboardBtn">Refresh</button>
+                <span class="muted small" id="dashboardCount">0 assets</span>
             </div>
-            <div class="kv" style="margin-top: 10px;">
-                <div class="k">Details</div>
-                <div class="v mono small" id="activeDetails">—</div>
-            </div>
-            <div class="row gap" style="margin-top: 12px;">
-                <button class="btn danger" id="revokeBtn" disabled>Revoke Active</button>
-                <input type="text" id="revokeReason" placeholder="Revocation reason (required)" style="flex: 1;">
-            </div>
-        </section>
-
-        <!-- Claims Table -->
-        <section class="card">
-            <h2>📋 Claims for Asset</h2>
             <div class="tableWrap">
-                <table class="table">
+                <table class="table dashboard-table">
                     <thead>
                         <tr>
-                            <th>Claim ID</th>
-                            <th>State</th>
-                            <th>Conflict</th>
-                            <th>Endorsements</th>
-                            <th>Publisher</th>
-                            <th>Created</th>
-                            <th>Actions</th>
+                            <th>Asset ID</th>
+                            <th>Status</th>
+                            <th>Action Required</th>
+                            <th>Active Claim</th>
+                            <th>Latest Claim</th>
+                            <th>Last Updated</th>
                         </tr>
                     </thead>
-                    <tbody id="claimsBody">
-                        <tr><td colspan="7" class="muted">Enter an asset_id and click Load</td></tr>
+                    <tbody id="dashboardBody">
+                        <tr><td colspan="6" class="muted">Loading assets...</td></tr>
                     </tbody>
                 </table>
+            </div>
+        </section>
+
+        <!-- Asset Detail View (shown when clicking a row) -->
+        <section class="card" id="assetDetailCard" style="display: none;">
+            <div class="card-header">
+                <h2>📍 Asset Details: <span id="selectedAssetId">—</span></h2>
+                <button class="btn small" id="backToDashboardBtn">← Back to Dashboard</button>
+            </div>
+
+            <!-- Active Anchor -->
+            <div class="detail-section">
+                <h3>Active Anchor</h3>
+                <div class="grid two">
+                    <div class="kv">
+                        <div class="k">Claim ID</div>
+                        <div class="v mono" id="activeClaimId">—</div>
+                    </div>
+                    <div class="kv">
+                        <div class="k">State</div>
+                        <div class="v" id="activeState"><span class="badge warn">none</span></div>
+                    </div>
+                </div>
+                <div class="kv" style="margin-top: 10px;">
+                    <div class="k">Details</div>
+                    <div class="v mono small" id="activeDetails">—</div>
+                </div>
+                <div class="row gap" style="margin-top: 12px;">
+                    <button class="btn danger" id="revokeBtn" disabled>Revoke Active</button>
+                    <input type="text" id="revokeReason" placeholder="Revocation reason (required)" style="flex: 1;">
+                </div>
+            </div>
+
+            <!-- Claims Table -->
+            <div class="detail-section">
+                <h3>All Claims for Asset</h3>
+                <div class="tableWrap">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Claim ID</th>
+                                <th>State</th>
+                                <th>Conflict</th>
+                                <th>Endorsements</th>
+                                <th>Publisher</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="claimsBody">
+                            <tr><td colspan="7" class="muted">Loading claims...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </section>
 
@@ -130,11 +150,16 @@
 
         <!-- Live Event Log -->
         <section class="card">
-            <h2>📡 Live Event Log (SSE)</h2>
-            <div id="eventLog" class="log"></div>
-            <div class="row" style="margin-top: 8px;">
-                <button class="btn small" id="clearLogBtn">Clear</button>
-                <span class="muted small" style="margin-left: auto;" id="eventCount">0 events</span>
+            <div class="card-header" onclick="toggleCard('eventLogContent')">
+                <h2>📡 Live Event Log (SSE)</h2>
+                <span class="toggle-icon">▼</span>
+            </div>
+            <div id="eventLogContent" class="card-content">
+                <div id="eventLog" class="log"></div>
+                <div class="row" style="margin-top: 8px;">
+                    <button class="btn small" id="clearLogBtn">Clear</button>
+                    <span class="muted small" style="margin-left: auto;" id="eventCount">0 events</span>
+                </div>
             </div>
         </section>
     </main>

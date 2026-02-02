@@ -6,7 +6,7 @@ const express = require('express');
 const router = express.Router();
 const { verifyPayloadHash } = require('../utils/hash');
 const { requireSupervisor } = require('../middleware/auth');
-const { getPayloadByHash } = require('../db/postgres');
+const { getPayloadByHash, clearAssetActive, updateAssetIndex } = require('../db/postgres');
 const fabric = require('../fabric/client');
 const logger = require('../utils/logger');
 const sseEventBus = require('../utils/sseEventBus');
@@ -111,6 +111,9 @@ router.post('/:asset_id/revoke', requireSupervisor, async (req, res, next) => {
         );
 
         logger.info('Revoke result:', claim);
+
+        // Update asset index - clear active, set state to REVOKED
+        await clearAssetActive(req.params.asset_id, claim.claimId);
 
         // Emit SSE event
         sseEventBus.emitClaimRevoked(claim, supervisorId, reason.trim());

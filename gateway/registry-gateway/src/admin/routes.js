@@ -1,5 +1,6 @@
 // =============================================================================
 // Admin Routes - Supervisor API with SSE Support
+// EP5 UPDATE: Added Last-Event-ID support for SSE stream
 // =============================================================================
 
 'use strict';
@@ -27,14 +28,21 @@ function nowIso() {
  * Server-Sent Events endpoint for real-time updates.
  * Query params:
  *   - asset_id: (optional) Filter events by asset_id
+ * Headers:
+ *   - Last-Event-ID: (optional) Resume from this event
  */
 router.get('/events/stream', (req, res) => {
     const assetIdFilter = req.query.asset_id || null;
+    const lastEventId = req.headers['last-event-id'] || req.query.last_event_id || null;
     
-    logger.info('SSE stream requested:', { assetIdFilter, apiKey: req.auth?.apiKey });
+    logger.info('Admin SSE stream requested:', { 
+        assetIdFilter, 
+        lastEventId,
+        apiKey: req.auth?.apiKey 
+    });
     
-    // Add client to SSE event bus
-    sseEventBus.addClient(res, assetIdFilter);
+    // Add client to SSE event bus with Last-Event-ID support
+    sseEventBus.addClient(res, assetIdFilter, lastEventId);
 });
 
 /**
@@ -49,7 +57,8 @@ router.get('/events', (req, res) => {
     res.json({
         success: true,
         count: events.length,
-        events
+        events,
+        last_event_id: sseEventBus.getLatestEventId()
     });
 });
 
@@ -103,7 +112,7 @@ router.post('/decision/:asset_id/approve', requireSupervisor, async (req, res) =
         };
         decisions.set(assetId, decision);
 
-        // Emit SSE event
+        // Emit SSE event (AFTER Fabric commit - submitTransaction waits for commit)
         sseEventBus.emitClaimEndorsed(claim, req.auth.apiKey);
 
         res.json({
@@ -158,7 +167,7 @@ router.post('/decision/:asset_id/reject', requireSupervisor, async (req, res) =>
         };
         decisions.set(assetId, decision);
 
-        // Emit SSE event
+        // Emit SSE event (AFTER Fabric commit)
         sseEventBus.emitClaimRejected(claim, req.auth.apiKey, reason.trim());
 
         res.json({
@@ -205,7 +214,7 @@ router.post('/decision/:asset_id/revoke', requireSupervisor, async (req, res) =>
         };
         decisions.set(assetId, decision);
 
-        // Emit SSE event
+        // Emit SSE event (AFTER Fabric commit)
         sseEventBus.emitClaimRevoked(claim, req.auth.apiKey, reason.trim());
 
         res.json({
@@ -243,7 +252,7 @@ router.post('/decision/:asset_id/reopen', requireSupervisor, async (req, res) =>
         // Clear decision (claim is back to proposed)
         decisions.delete(assetId);
 
-        // Emit SSE event
+        // Emit SSE event (AFTER Fabric commit)
         sseEventBus.emitClaimReopened(claim, req.auth.apiKey);
 
         res.json({
@@ -355,6 +364,7 @@ router.get('/stats', (req, res) => {
         success: true,
         sse_clients: sseEventBus.getClientCount(),
         recent_events: sseEventBus.getRecentEvents(10).length,
+        last_event_id: sseEventBus.getLatestEventId(),
         timestamp: nowIso()
     });
 });

@@ -1,5 +1,6 @@
 // =============================================================================
 // MR-Anchor-Registry Gateway - Main Entry Point
+// EP5 UPDATE: Added /events routes for headset SSE and snapshot
 // =============================================================================
 
 const express = require('express');
@@ -16,6 +17,7 @@ const errorHandler = require('./middleware/errorHandler');
 const claimsRoutes = require('./routes/claims');
 const assetsRoutes = require('./routes/assets');
 const healthRoutes = require('./routes/health');
+const eventsRoutes = require('./routes/events');  // EP5: New headset-accessible events
 const adminRoutes = require('./admin/routes');
 
 const app = express();
@@ -41,6 +43,10 @@ app.use('/admin', express.static(path.join(__dirname, 'admin', 'public')));
 // Admin API (auth required)
 app.use('/admin/api', authMiddleware, adminRoutes);
 
+// EP5: Headset-accessible events (SSE stream + snapshot)
+// Accessible to proposer role - NOT supervisor-only
+app.use('/events', authMiddleware, eventsRoutes);
+
 // Main API routes (auth required)
 app.use('/claims', authMiddleware, claimsRoutes);
 app.use('/assets', authMiddleware, assetsRoutes);
@@ -49,14 +55,16 @@ app.use('/assets', authMiddleware, assetsRoutes);
 app.get('/', (req, res) => {
     res.json({
         service: 'MR-Anchor-Registry',
-        version: '2.0.0',
+        version: '2.1.0',  // EP5 version bump
         endpoints: {
             health: '/health',
             claims: '/claims',
             assets: '/assets',
+            events_stream: '/events/stream',     // EP5: Headset SSE
+            events_snapshot: '/events/snapshot', // EP5: Headset catch-up
             admin_ui: '/admin/',
             admin_api: '/admin/api',
-            sse_stream: '/admin/api/events/stream'
+            admin_sse_stream: '/admin/api/events/stream'  // Legacy admin stream
         }
     });
 });
@@ -75,7 +83,8 @@ app.use(errorHandler);
 
 async function start() {
     logger.info('========================================');
-    logger.info('  MR-Anchor-Registry Gateway v2.0.0');
+    logger.info('  MR-Anchor-Registry Gateway v2.1.0');
+    logger.info('  EP5: Unity <-> Gateway Integration');
     logger.info('========================================');
     logger.info('');
     logger.info('Configuration:');
@@ -103,10 +112,18 @@ async function start() {
         logger.info('========================================');
         logger.info('');
         logger.info('Endpoints:');
-        logger.info(`  Health:     http://localhost:${config.port}/health`);
-        logger.info(`  API:        http://localhost:${config.port}/claims`);
-        logger.info(`  Admin UI:   http://localhost:${config.port}/admin/`);
-        logger.info(`  SSE Stream: http://localhost:${config.port}/admin/api/events/stream`);
+        logger.info(`  Health:          http://localhost:${config.port}/health`);
+        logger.info(`  Claims API:      http://localhost:${config.port}/claims`);
+        logger.info(`  Assets API:      http://localhost:${config.port}/assets`);
+        logger.info(`  Events SSE:      http://localhost:${config.port}/events/stream`);
+        logger.info(`  Events Snapshot: http://localhost:${config.port}/events/snapshot`);
+        logger.info(`  Admin UI:        http://localhost:${config.port}/admin/`);
+        logger.info(`  Admin SSE:       http://localhost:${config.port}/admin/api/events/stream`);
+        logger.info('');
+        logger.info('EP5 Notes:');
+        logger.info('  - /events/stream accessible with proposer API key');
+        logger.info('  - Supports Last-Event-ID header for replay');
+        logger.info('  - /events/snapshot for catch-up after reconnect');
         logger.info('');
     });
 }

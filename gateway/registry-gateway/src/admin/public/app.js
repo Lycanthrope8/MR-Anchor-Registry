@@ -1,11 +1,12 @@
 /**
- * MR Anchor Registry — Supervisor UI v2.0
+ * MR Anchor Registry — Supervisor UI v2.1
  * 
  * Features:
+ * - Dashboard view showing ALL assets by default
+ * - "Needs Action" badge for PROPOSED claims
  * - Real-time updates via Server-Sent Events (SSE)
- * - On-chain reject with reason (auditable)
- * - Approve (endorse), Reject, Revoke actions
- * - No manual refresh required
+ * - Click row to view asset details
+ * - On-chain approve/reject/revoke
  */
 
 // =============================================================================
@@ -17,21 +18,24 @@ const els = {
     baseUrl: document.getElementById('baseUrl'),
     apiKey: document.getElementById('apiKey'),
     connectBtn: document.getElementById('connectBtn'),
-    assetId: document.getElementById('assetId'),
-    loadAssetBtn: document.getElementById('loadAssetBtn'),
-    sseConnectBtn: document.getElementById('sseConnectBtn'),
-    sseDisconnectBtn: document.getElementById('sseDisconnectBtn'),
     ssePill: document.getElementById('ssePill'),
     connPill: document.getElementById('connPill'),
     
-    // Active anchor
+    // Dashboard
+    dashboardCard: document.getElementById('dashboardCard'),
+    dashboardBody: document.getElementById('dashboardBody'),
+    dashboardCount: document.getElementById('dashboardCount'),
+    refreshDashboardBtn: document.getElementById('refreshDashboardBtn'),
+    
+    // Asset detail
+    assetDetailCard: document.getElementById('assetDetailCard'),
+    selectedAssetId: document.getElementById('selectedAssetId'),
+    backToDashboardBtn: document.getElementById('backToDashboardBtn'),
     activeClaimId: document.getElementById('activeClaimId'),
     activeState: document.getElementById('activeState'),
     activeDetails: document.getElementById('activeDetails'),
     revokeBtn: document.getElementById('revokeBtn'),
     revokeReason: document.getElementById('revokeReason'),
-    
-    // Claims table
     claimsBody: document.getElementById('claimsBody'),
     
     // Claim details
@@ -59,14 +63,15 @@ const els = {
 const state = {
     eventSource: null,
     connected: false,
-    currentAssetId: null,
+    currentView: 'dashboard', // 'dashboard' or 'detail'
+    selectedAssetId: null,
     pendingRejectClaimId: null,
-    eventCounter: 0
+    eventCounter: 0,
+    assetsCache: new Map() // asset_id -> row data
 };
 
 const STORAGE_KEYS = {
-    apiKey: 'mr_registry_api_key',
-    assetId: 'mr_registry_asset_id'
+    apiKey: 'mr_registry_api_key'
 };
 
 // =============================================================================
@@ -100,6 +105,12 @@ function escapeHtml(s) {
 function formatTime(isoString) {
     if (!isoString) return '—';
     const d = new Date(isoString);
+    return d.toLocaleString();
+}
+
+function formatTimeShort(isoString) {
+    if (!isoString) return '—';
+    const d = new Date(isoString);
     return d.toLocaleTimeString();
 }
 
@@ -111,6 +122,16 @@ function badgeClass(state) {
     if (s === 'PROPOSED' || s === 'CONFLICT' || s === 'SUPERSEDED') return 'warn';
     return 'info';
 }
+
+function toggleCard(contentId) {
+    const content = document.getElementById(contentId);
+    if (content) {
+        content.classList.toggle('collapsed');
+    }
+}
+
+// Make toggleCard available globally for onclick
+window.toggleCard = toggleCard;
 
 // =============================================================================
 // API Functions
@@ -152,12 +173,117 @@ async function checkHealth() {
     }
 }
 
-async function loadAssetData(assetId) {
-    if (!assetId) {
-        els.claimsBody.innerHTML = '<tr><td colspan="7" class="muted">Enter an asset_id</td></tr>';
-        updateActiveDisplay(null);
+// =============================================================================
+// Dashboard Functions
+// =============================================================================
+
+async function loadDashboard() {
+    if (!getApiKey()) {
+        els.dashboardBody.innerHTML = '<tr><td colspan="6" class="muted">Enter API key and click Connect</td></tr>';
         return;
     }
+    
+    try {
+        const data = await fetchJson('/admin/api/assets', { headers: headers() });
+        const assets = data.assets || [];
+        
+        // Update cache
+        state.assetsCache.clear();
+        assets.forEach(a => state.assetsCache.set(a.asset_id, a));
+        
+        renderDashboard(assets);
+        els.dashboardCount.textContent = `${assets.length} asset${assets.length !== 1 ? 's' : ''}`;
+        logEvent('system', `Dashboard loaded: ${assets.length} assets`);
+    } catch (e) {
+        logEvent('system', `Dashboard load failed: ${e.message}`, 'error');
+        els.dashboardBody.innerHTML = `<tr><td colspan="6" class="muted">Error: ${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+function renderDashboard(assets) {
+    if (!assets || assets.length === 0) {
+        els.dashboardBody.innerHTML = '<tr><td colspan="6" class="muted">No assets found. Use CLI to propose claims.</td></tr>';
+        return;
+    }
+    
+    const rows = assets.map(a => {
+        const needsAction = a.latest_state === 'PROPOSED';
+        const actionBadge = needsAction 
+            ? '<span class="badge action-badge">Needs Action</span>' 
+            : '';
+        
+        return `
+            <tr class="dashboard-row ${needsAction ? 'needs-action' : ''}" data-asset-id="${escapeHtml(a.asset_id)}">
+                <td class="mono">${escapeHtml(a.asset_id)}</td>
+                <td><span class="badge ${badgeClass(a.latest_state)}">${a.latest_state || 'UNKNOWN'}</span></td>
+                <td>${actionBadge}</td>
+                <td class="mono small">${a.active_claim_id ? escapeHtml(a.active_claim_id.substring(0, 16)) + '...' : '—'}</td>
+                <td class="mono small">${a.latest_claim_id ? escapeHtml(a.latest_claim_id.substring(0, 16)) + '...' : '—'}</td>
+                <td class="small">${formatTime(a.last_updated_at)}</td>
+            </tr>
+        `;
+    });
+    
+    els.dashboardBody.innerHTML = rows.join('');
+}
+
+function updateDashboardRow(assetId, newState, activeClaimId, latestClaimId) {
+    // Update cache
+    const cached = state.assetsCache.get(assetId);
+    if (cached) {
+        cached.latest_state = newState;
+        cached.active_claim_id = activeClaimId;
+        cached.latest_claim_id = latestClaimId || cached.latest_claim_id;
+        cached.last_updated_at = new Date().toISOString();
+    } else {
+        // New asset - add to cache
+        state.assetsCache.set(assetId, {
+            asset_id: assetId,
+            latest_state: newState,
+            active_claim_id: activeClaimId,
+            latest_claim_id: latestClaimId,
+            last_updated_at: new Date().toISOString()
+        });
+    }
+    
+    // Re-render dashboard if we're on that view
+    if (state.currentView === 'dashboard') {
+        const assets = Array.from(state.assetsCache.values());
+        // Sort by last_updated_at desc
+        assets.sort((a, b) => new Date(b.last_updated_at) - new Date(a.last_updated_at));
+        renderDashboard(assets);
+        els.dashboardCount.textContent = `${assets.length} asset${assets.length !== 1 ? 's' : ''}`;
+    }
+}
+
+// =============================================================================
+// Asset Detail Functions
+// =============================================================================
+
+function showAssetDetail(assetId) {
+    state.currentView = 'detail';
+    state.selectedAssetId = assetId;
+    
+    els.dashboardCard.style.display = 'none';
+    els.assetDetailCard.style.display = 'block';
+    els.selectedAssetId.textContent = assetId;
+    
+    loadAssetDetail(assetId);
+}
+
+function showDashboard() {
+    state.currentView = 'dashboard';
+    state.selectedAssetId = null;
+    
+    els.assetDetailCard.style.display = 'none';
+    els.dashboardCard.style.display = 'block';
+    
+    // Refresh dashboard
+    loadDashboard();
+}
+
+async function loadAssetDetail(assetId) {
+    if (!assetId) return;
     
     try {
         const data = await fetchJson(`/admin/api/asset/${encodeURIComponent(assetId)}`, {
@@ -166,15 +292,10 @@ async function loadAssetData(assetId) {
         
         updateActiveDisplay(data.active);
         renderClaimsTable(data.claims || [], assetId);
-        logEvent('system', `Loaded asset: ${assetId} (${(data.claims || []).length} claims)`);
     } catch (e) {
-        logEvent('system', `Load failed: ${e.message}`, 'error');
+        logEvent('system', `Load asset detail failed: ${e.message}`, 'error');
     }
 }
-
-// =============================================================================
-// UI Update Functions
-// =============================================================================
 
 function updateActiveDisplay(active) {
     if (!active) {
@@ -191,7 +312,7 @@ function updateActiveDisplay(active) {
     const details = [
         `publisher: ${active.publisherId || '—'}`,
         `endorsements: ${active.endorsementCount || 0}`,
-        `activated: ${formatTime(active.activatedAt)}`
+        `activated: ${formatTimeShort(active.activatedAt)}`
     ];
     els.activeDetails.textContent = details.join(' | ');
     
@@ -217,7 +338,7 @@ function renderClaimsTable(claims, assetId) {
         const conflict = c.conflictClassification || '—';
         const endorsements = c.endorsementCount || 0;
         const publisher = c.publisherId || '—';
-        const created = formatTime(c.createdAt);
+        const created = formatTimeShort(c.createdAt);
         
         const canApprove = ['PROPOSED', 'CONFLICT'].includes(stateText);
         const canReject = ['PROPOSED', 'CONFLICT'].includes(stateText);
@@ -249,7 +370,6 @@ function renderClaimsTable(claims, assetId) {
 // =============================================================================
 
 function connectSSE() {
-    const assetId = state.currentAssetId;
     const apiKey = getApiKey();
     
     if (!apiKey) {
@@ -259,17 +379,10 @@ function connectSSE() {
     
     disconnectSSE();
     
-    let url = `${baseUrl()}/admin/api/events/stream`;
-    if (assetId) {
-        url += `?asset_id=${encodeURIComponent(assetId)}`;
-    }
+    // Connect without asset filter to get ALL events for dashboard
+    const url = `${baseUrl()}/admin/api/events/stream`;
     
-    // Note: EventSource doesn't support custom headers, so we'll poll if needed
-    // For this demo, we use a workaround with fetch + ReadableStream
-    
-    logEvent('system', `Connecting SSE...${assetId ? ` (filter: ${assetId})` : ''}`);
-    
-    // Use fetch for SSE with headers
+    logEvent('system', 'Connecting SSE (all assets)...');
     startSSEWithFetch(url);
 }
 
@@ -290,8 +403,6 @@ async function startSSEWithFetch(url) {
         
         els.ssePill.textContent = 'SSE: connected';
         els.ssePill.className = 'pill good';
-        els.sseConnectBtn.disabled = true;
-        els.sseDisconnectBtn.disabled = false;
         document.body.classList.add('sse-connected');
         
         state.eventSource = { reader, active: true };
@@ -340,8 +451,6 @@ function disconnectSSE() {
     
     els.ssePill.textContent = 'SSE: disconnected';
     els.ssePill.className = 'pill';
-    els.sseConnectBtn.disabled = false;
-    els.sseDisconnectBtn.disabled = true;
     document.body.classList.remove('sse-connected');
 }
 
@@ -352,14 +461,51 @@ function handleSSEEvent(event) {
     const typeClass = type.toLowerCase().replace('claim_', '');
     logEvent(typeClass, formatEventMessage(event));
     
-    // Refresh data on relevant events
+    // Update dashboard based on event type
     if (['CLAIM_PROPOSED', 'CLAIM_ENDORSED', 'CLAIM_ACTIVATED', 
          'CLAIM_REJECTED', 'CLAIM_REVOKED', 'CLAIM_REOPENED', 
          'ACTIVE_CHANGED'].includes(type)) {
         
-        // Only refresh if event is for our current asset
-        if (!state.currentAssetId || event.assetId === state.currentAssetId) {
-            loadAssetData(state.currentAssetId);
+        const assetId = event.assetId;
+        const claimId = event.claimId;
+        let newState = event.state;
+        let activeClaimId = null;
+        
+        // Determine new state and active claim
+        switch (type) {
+            case 'CLAIM_PROPOSED':
+                newState = 'PROPOSED';
+                break;
+            case 'CLAIM_ACTIVATED':
+            case 'CLAIM_ENDORSED':
+                if (event.state === 'ACTIVE') {
+                    newState = 'ACTIVE';
+                    activeClaimId = claimId;
+                }
+                break;
+            case 'CLAIM_REJECTED':
+                newState = 'REJECTED';
+                break;
+            case 'CLAIM_REVOKED':
+                newState = 'REVOKED';
+                activeClaimId = null;
+                break;
+            case 'CLAIM_REOPENED':
+                newState = 'PROPOSED';
+                break;
+            case 'ACTIVE_CHANGED':
+                activeClaimId = event.activeClaimId;
+                break;
+        }
+        
+        // Update dashboard row
+        if (assetId && newState) {
+            updateDashboardRow(assetId, newState, activeClaimId, claimId);
+        }
+        
+        // Refresh detail view if we're viewing this asset
+        if (state.currentView === 'detail' && state.selectedAssetId === assetId) {
+            loadAssetDetail(assetId);
         }
     }
 }
@@ -410,7 +556,7 @@ function logEvent(type, message, level = 'info') {
 // =============================================================================
 
 async function handleApprove(claimId) {
-    const assetId = state.currentAssetId;
+    const assetId = state.selectedAssetId;
     if (!assetId || !claimId) return;
     
     try {
@@ -425,7 +571,7 @@ async function handleApprove(claimId) {
         const newState = result.claim?.state || 'UNKNOWN';
         logEvent('endorsed', `Claim ${claimId} → ${newState}`);
         
-        await loadAssetData(assetId);
+        await loadAssetDetail(assetId);
     } catch (e) {
         logEvent('system', `Approve failed: ${e.message}`, 'error');
     }
@@ -447,7 +593,7 @@ function hideRejectModal() {
 async function handleReject() {
     const claimId = state.pendingRejectClaimId;
     const reason = (els.rejectReason.value || '').trim();
-    const assetId = state.currentAssetId;
+    const assetId = state.selectedAssetId;
     
     if (!claimId || !assetId) return;
     
@@ -467,14 +613,14 @@ async function handleReject() {
         
         logEvent('rejected', `Claim ${claimId} REJECTED on-chain`);
         hideRejectModal();
-        await loadAssetData(assetId);
+        await loadAssetDetail(assetId);
     } catch (e) {
         logEvent('system', `Reject failed: ${e.message}`, 'error');
     }
 }
 
 async function handleReopen(claimId) {
-    const assetId = state.currentAssetId;
+    const assetId = state.selectedAssetId;
     if (!assetId || !claimId) return;
     
     const reason = prompt('Reopen reason (optional):') || '';
@@ -489,14 +635,14 @@ async function handleReopen(claimId) {
         });
         
         logEvent('system', `Claim ${claimId} reopened → PROPOSED`);
-        await loadAssetData(assetId);
+        await loadAssetDetail(assetId);
     } catch (e) {
         logEvent('system', `Reopen failed: ${e.message}`, 'error');
     }
 }
 
 async function handleRevoke() {
-    const assetId = state.currentAssetId;
+    const assetId = state.selectedAssetId;
     const reason = (els.revokeReason.value || '').trim();
     
     if (!assetId) return;
@@ -522,7 +668,7 @@ async function handleRevoke() {
         
         logEvent('revoked', `Active anchor revoked: ${result.claim?.claimId}`);
         els.revokeReason.value = '';
-        await loadAssetData(assetId);
+        await loadAssetDetail(assetId);
     } catch (e) {
         logEvent('system', `Revoke failed: ${e.message}`, 'error');
     }
@@ -594,32 +740,31 @@ function wireEvents() {
     els.connectBtn.addEventListener('click', async () => {
         localStorage.setItem(STORAGE_KEYS.apiKey, getApiKey());
         await checkHealth();
-        logEvent('system', 'API key saved');
+        await loadDashboard();
+        connectSSE();
+        logEvent('system', 'Connected');
     });
     
-    // Load asset
-    els.loadAssetBtn.addEventListener('click', () => {
-        const assetId = (els.assetId.value || '').trim();
-        localStorage.setItem(STORAGE_KEYS.assetId, assetId);
-        state.currentAssetId = assetId;
-        loadAssetData(assetId);
-        
-        // Reconnect SSE with new filter
-        if (state.eventSource) {
-            connectSSE();
+    // Refresh dashboard
+    els.refreshDashboardBtn.addEventListener('click', () => {
+        loadDashboard();
+    });
+    
+    // Dashboard row click
+    els.dashboardBody.addEventListener('click', (e) => {
+        const row = e.target.closest('.dashboard-row');
+        if (row) {
+            const assetId = row.dataset.assetId;
+            if (assetId) {
+                showAssetDetail(assetId);
+            }
         }
     });
     
-    // Asset ID enter key
-    els.assetId.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            els.loadAssetBtn.click();
-        }
+    // Back to dashboard
+    els.backToDashboardBtn.addEventListener('click', () => {
+        showDashboard();
     });
-    
-    // SSE connect/disconnect
-    els.sseConnectBtn.addEventListener('click', connectSSE);
-    els.sseDisconnectBtn.addEventListener('click', disconnectSSE);
     
     // Revoke button
     els.revokeBtn.addEventListener('click', handleRevoke);
@@ -677,12 +822,9 @@ async function init() {
     
     // Restore from localStorage
     const savedKey = localStorage.getItem(STORAGE_KEYS.apiKey);
-    const savedAssetId = localStorage.getItem(STORAGE_KEYS.assetId);
     
-    if (savedKey) els.apiKey.value = savedKey;
-    if (savedAssetId) {
-        els.assetId.value = savedAssetId;
-        state.currentAssetId = savedAssetId;
+    if (savedKey) {
+        els.apiKey.value = savedKey;
     }
     
     // Wire up event handlers
@@ -691,13 +833,14 @@ async function init() {
     // Check health
     await checkHealth();
     
-    // Load initial data if we have an asset ID
-    if (state.currentAssetId && getApiKey()) {
-        await loadAssetData(state.currentAssetId);
+    // If we have an API key, auto-connect
+    if (getApiKey()) {
+        await loadDashboard();
+        connectSSE();
     }
     
-    logEvent('system', 'Supervisor UI v2.0 initialized');
-    logEvent('system', 'Click "Connect SSE" for real-time updates');
+    logEvent('system', 'Supervisor UI v2.1 initialized');
+    logEvent('system', 'Dashboard shows all assets. Click a row for details.');
 }
 
 // Start

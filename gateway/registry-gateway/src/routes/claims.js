@@ -7,7 +7,7 @@ const { v4: uuidv4 } = require('uuid');
 const router = express.Router();
 const { hashPayload } = require('../utils/hash');
 const { requireRole, requireSupervisor } = require('../middleware/auth');
-const { storePayload } = require('../db/postgres');
+const { storePayload, updateAssetIndex } = require('../db/postgres');
 const fabric = require('../fabric/client');
 const logger = require('../utils/logger');
 const sseEventBus = require('../utils/sseEventBus');
@@ -75,6 +75,9 @@ router.post('/propose', requireRole('proposer', 'supervisor'), async (req, res, 
 
         logger.info('ProposeAnchor result:', claim);
 
+        // Update asset index for dashboard
+        await updateAssetIndex(asset_id, claim.claimId, 'PROPOSED', null, publisherId);
+
         // Emit SSE event
         sseEventBus.emitClaimProposed(claim);
 
@@ -105,6 +108,12 @@ router.post('/:claim_id/endorse', requireRole('endorser', 'supervisor'), async (
         const claim = await fabric.endorseAnchor(claim_id, endorserId);
 
         logger.info('Endorse result:', claim);
+
+        // Update asset index if claim became ACTIVE
+        if (claim.state === 'ACTIVE') {
+            const { setAssetActive } = require('../db/postgres');
+            await setAssetActive(claim.assetId, claim.claimId);
+        }
 
         // Emit SSE event
         sseEventBus.emitClaimEndorsed(claim, endorserId);
@@ -144,6 +153,9 @@ router.post('/:claim_id/reject', requireSupervisor, async (req, res, next) => {
 
         logger.info('Reject result:', claim);
 
+        // Update asset index
+        await updateAssetIndex(claim.assetId, claim.claimId, 'REJECTED', null, null);
+
         // Emit SSE event
         sseEventBus.emitClaimRejected(claim, supervisorId, reason.trim());
 
@@ -176,6 +188,9 @@ router.post('/:claim_id/reopen', requireSupervisor, async (req, res, next) => {
         const claim = await fabric.reopenClaim(claim_id, reason || '', supervisorId);
 
         logger.info('Reopen result:', claim);
+
+        // Update asset index - back to PROPOSED
+        await updateAssetIndex(claim.assetId, claim.claimId, 'PROPOSED', null, null);
 
         // Emit SSE event
         sseEventBus.emitClaimReopened(claim, supervisorId);
