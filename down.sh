@@ -1,93 +1,141 @@
 #!/bin/bash
-# =============================================================================
-# MR-Anchor-Registry - Shutdown Script (down.sh)
-# =============================================================================
+# ==============================================================================
+# down.sh - Complete shutdown and cleanup of MR Anchor Registry
+# Stops all containers, removes volumes, and cleans generated files
+# ==============================================================================
 
 set -e
 
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-export WORK_DIR="${WORK_DIR:-$HOME/work}"
-export MR_ANCHOR_DIR="${MR_ANCHOR_DIR:-$WORK_DIR/MR-Anchor-Registry}"
-export FABRIC_SAMPLES_DIR="${FABRIC_SAMPLES_DIR:-$WORK_DIR/fabric-samples}"
-export TEST_NETWORK_DIR="$FABRIC_SAMPLES_DIR/test-network"
-
-SHUTDOWN_FABRIC=false
-FORCE=false
-
-for arg in "$@"; do
-    case $arg in
-        --fabric)
-            SHUTDOWN_FABRIC=true
-            ;;
-        --force|-f)
-            FORCE=true
-            ;;
-        --help|-h)
-            echo "Usage: $0 [OPTIONS]"
-            echo ""
-            echo "Options:"
-            echo "  --fabric    Also shutdown Fabric test-network"
-            echo "  --force     Force kill processes"
-            echo "  --help      Show this help"
-            exit 0
-            ;;
-    esac
-done
-
-echo -e "${CYAN}=========================================="
-echo "  MR-Anchor-Registry - Shutdown"
-echo -e "==========================================${NC}"
+echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║         MR Anchor Registry - Complete Shutdown               ║${NC}"
+echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Stop Gateway
-echo -e "${YELLOW}[1/3] Shutting down Gateway...${NC}"
-if [ -f "$MR_ANCHOR_DIR/gateway.pid" ]; then
-    PID=$(cat "$MR_ANCHOR_DIR/gateway.pid")
-    if ps -p $PID > /dev/null 2>&1; then
-        kill $PID 2>/dev/null || true
-        sleep 2
-        echo -e "${GREEN}  ✓ Gateway stopped${NC}"
-    else
-        echo -e "${YELLOW}  ⚠ Gateway was not running${NC}"
-    fi
-    rm -f "$MR_ANCHOR_DIR/gateway.pid"
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# ==============================================================================
+# 1. Stop Gateway Server (if running)
+# ==============================================================================
+echo -e "${YELLOW}[1/5] Stopping Gateway Server...${NC}"
+
+# Find and kill any node process running the gateway
+GATEWAY_PID=$(lsof -ti:3000 2>/dev/null || true)
+if [ -n "$GATEWAY_PID" ]; then
+    echo "  Killing gateway process on port 3000 (PID: $GATEWAY_PID)"
+    kill -9 $GATEWAY_PID 2>/dev/null || true
+    echo -e "${GREEN}  ✓ Gateway stopped${NC}"
 else
-    pkill -f "node.*registry-gateway" 2>/dev/null && \
-        echo -e "${GREEN}  ✓ Gateway stopped${NC}" || \
-        echo -e "${YELLOW}  ⚠ Gateway was not running${NC}"
+    echo "  Gateway not running on port 3000"
 fi
 
-# Stop PostgreSQL
-echo -e "${YELLOW}[2/3] Shutting down PostgreSQL...${NC}"
-if docker ps | grep -q mr-anchor-postgres; then
-    docker stop mr-anchor-postgres > /dev/null 2>&1
-    docker rm mr-anchor-postgres > /dev/null 2>&1
-    echo -e "${GREEN}  ✓ PostgreSQL stopped${NC}"
+# ==============================================================================
+# 2. Stop Docker Containers
+# ==============================================================================
+echo -e "${YELLOW}[2/5] Stopping Docker containers...${NC}"
+
+# Try docker-compose down from network/docker directory
+if [ -f "network/docker/docker-compose.yaml" ]; then
+    cd network/docker
+    docker-compose down --volumes --remove-orphans 2>/dev/null || true
+    cd "$SCRIPT_DIR"
+    echo -e "${GREEN}  ✓ Docker containers stopped${NC}"
 else
-    echo -e "${YELLOW}  ⚠ PostgreSQL was not running${NC}"
+    echo "  docker-compose.yaml not found, trying to stop containers manually..."
+    # Stop containers by name pattern
+    docker stop $(docker ps -aq --filter "name=peer0.org1" --filter "name=peer0.org2" --filter "name=orderer" --filter "name=anchor-registry") 2>/dev/null || true
+    docker rm $(docker ps -aq --filter "name=peer0.org1" --filter "name=peer0.org2" --filter "name=orderer" --filter "name=anchor-registry") 2>/dev/null || true
 fi
 
-# Stop Fabric (optional)
-if [ "$SHUTDOWN_FABRIC" = true ]; then
-    echo -e "${YELLOW}[3/3] Shutting down Fabric test-network...${NC}"
-    if [ -d "$TEST_NETWORK_DIR" ]; then
-        cd "$TEST_NETWORK_DIR"
-        ./network.sh down
-        echo -e "${GREEN}  ✓ Fabric network stopped${NC}"
-    fi
-else
-    echo -e "${YELLOW}[3/3] Skipping Fabric shutdown (use --fabric to include)${NC}"
+# ==============================================================================
+# 3. Remove Docker Volumes
+# ==============================================================================
+echo -e "${YELLOW}[3/5] Removing Docker volumes...${NC}"
+
+# Remove named volumes
+docker volume rm docker_orderer.anchor-registry.com 2>/dev/null || true
+docker volume rm docker_peer0.org1.anchor-registry.com 2>/dev/null || true
+docker volume rm docker_peer0.org2.anchor-registry.com 2>/dev/null || true
+
+# Also try without 'docker_' prefix (depends on docker-compose version)
+docker volume rm orderer.anchor-registry.com 2>/dev/null || true
+docker volume rm peer0.org1.anchor-registry.com 2>/dev/null || true
+docker volume rm peer0.org2.anchor-registry.com 2>/dev/null || true
+
+# Remove any dangling volumes related to our network
+docker volume ls -q | grep -E "(anchor-registry|org1|org2|orderer)" | xargs docker volume rm 2>/dev/null || true
+
+echo -e "${GREEN}  ✓ Docker volumes removed${NC}"
+
+# ==============================================================================
+# 4. Remove Chaincode Docker Images
+# ==============================================================================
+echo -e "${YELLOW}[4/5] Removing chaincode Docker images...${NC}"
+
+# Remove chaincode containers
+docker rm -f $(docker ps -aq --filter "name=dev-peer") 2>/dev/null || true
+
+# Remove chaincode images
+docker rmi -f $(docker images -q "dev-peer*") 2>/dev/null || true
+docker rmi -f $(docker images -q "*anchor-registry*") 2>/dev/null || true
+
+echo -e "${GREEN}  ✓ Chaincode images removed${NC}"
+
+# ==============================================================================
+# 5. Clean Generated Files
+# ==============================================================================
+echo -e "${YELLOW}[5/5] Cleaning generated files...${NC}"
+
+# Remove crypto material
+if [ -d "network/crypto-config" ]; then
+    rm -rf network/crypto-config
+    echo "  Removed network/crypto-config/"
 fi
 
+# Remove channel artifacts
+if [ -d "network/channel-artifacts" ]; then
+    rm -rf network/channel-artifacts
+    echo "  Removed network/channel-artifacts/"
+fi
+
+# Remove gateway wallet
+if [ -d "gateway/wallet" ]; then
+    rm -rf gateway/wallet
+    echo "  Removed gateway/wallet/"
+fi
+
+# Remove chaincode packages
+rm -f chaincode/*.tar.gz 2>/dev/null || true
+rm -f *.tar.gz 2>/dev/null || true
+echo "  Removed chaincode packages"
+
+# Remove log files
+rm -f gateway.log 2>/dev/null || true
+rm -f gateway/*.log 2>/dev/null || true
+echo "  Removed log files"
+
+echo -e "${GREEN}  ✓ Generated files cleaned${NC}"
+
+# ==============================================================================
+# Summary
+# ==============================================================================
 echo ""
-echo -e "${CYAN}=========================================="
-echo "  Shutdown Complete"
-echo -e "==========================================${NC}"
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║              Shutdown Complete!                              ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo "To restart: ./up.sh"
+echo "All components have been stopped and cleaned:"
+echo "  • Gateway server stopped"
+echo "  • Docker containers removed"
+echo "  • Docker volumes removed"
+echo "  • Chaincode images removed"
+echo "  • Generated crypto/artifacts cleaned"
 echo ""
+echo -e "Run ${YELLOW}./up.sh${NC} to start fresh."
