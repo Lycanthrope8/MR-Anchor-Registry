@@ -3,137 +3,198 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR Anchor Registry - Org2 Admin Panel</title>
-    <link rel="stylesheet" href="org2.css">
+    <title>Org2 Admin — MR Anchor Registry</title>
+    <link rel="stylesheet" href="./org2.css">
 </head>
 <body>
-    <div class="container">
-        <header class="header">
-            <div class="logo">
-                <div class="logo-icon">O2</div>
-                <div>
-                    <h1>MR Anchor Registry</h1>
-                    <span class="org-badge">Organization 2 - Admin Panel</span>
+    <header class="topbar">
+        <div class="brand">
+            <div class="dot"></div>
+            <div>
+                <div class="title">MR Anchor Registry</div>
+                <div class="subtitle">Organization 2 — Admin Panel</div>
+            </div>
+        </div>
+        <div class="right">
+            <div class="pill" id="ssePill">
+                <span class="status-dot"></span>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Stats Cards -->
+        <section class="stats-row">
+            <div class="stat-card">
+                <div class="stat-icon active">✓</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="activeCount">0</div>
+                    <div class="stat-label">Active Anchors</div>
                 </div>
             </div>
-            <div class="status-indicator" id="connectionStatus">
-                <span class="status-dot"></span>
-                <span id="statusText">Disconnected</span>
+            <div class="stat-card">
+                <div class="stat-icon pending">⏳</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="pendingCount">0</div>
+                    <div class="stat-label">Pending Claims</div>
+                </div>
             </div>
-        </header>
-
-        <nav class="tabs">
-            <button class="tab active" data-tab="anchors">Active Anchors</button>
-            <button class="tab" data-tab="pending">Pending Claims</button>
-            <button class="tab" data-tab="revocations">Revocations</button>
-            <button class="tab" data-tab="actions">Actions</button>
-        </nav>
-
-        <section id="anchors" class="tab-content active">
-            <div class="section-header">
-                <h2>Active Anchors</h2>
-                <button class="btn btn-primary" onclick="refreshAnchors()">Refresh</button>
+            <div class="stat-card highlight">
+                <div class="stat-icon action">⚡</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="actionCount">0</div>
+                    <div class="stat-label">Needs Your Action</div>
+                </div>
             </div>
-            <div class="card">
-                <table id="anchorsTable">
-                    <thead>
-                        <tr><th>Asset ID</th><th>Claim ID</th><th>Publisher</th><th>Activated</th><th>Actions</th></tr>
-                    </thead>
-                    <tbody id="anchorsBody">
-                        <tr><td colspan="5" class="loading">Loading...</td></tr>
-                    </tbody>
-                </table>
+            <div class="stat-card">
+                <div class="stat-icon revoke">⚠</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="revokeCount">0</div>
+                    <div class="stat-label">Pending Revocations</div>
+                </div>
             </div>
         </section>
 
-        <section id="pending" class="tab-content">
-            <div class="section-header">
-                <h2>Pending Claims (Awaiting Your Endorsement)</h2>
-                <button class="btn btn-primary" onclick="refreshPending()">Refresh</button>
+        <!-- Pending Claims - Action Required -->
+        <section class="card">
+            <div class="card-header">
+                <h2>📋 Pending Claims</h2>
+                <button class="btn small" onclick="refreshPending()">Refresh</button>
             </div>
-            <div class="card">
-                <table id="pendingTable">
+            <div class="tableWrap">
+                <table class="table">
                     <thead>
-                        <tr><th>Asset ID</th><th>Proposed By</th><th>Proposed At</th><th>Actions</th></tr>
+                        <tr>
+                            <th>Asset ID</th>
+                            <th>Proposed By</th>
+                            <th>Endorsements</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
                     </thead>
                     <tbody id="pendingBody">
-                        <tr><td colspan="4" class="loading">Loading...</td></tr>
+                        <tr><td colspan="5" class="muted">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
         </section>
 
-        <section id="revocations" class="tab-content">
-            <div class="section-header">
-                <h2>Pending Revocations</h2>
-                <button class="btn btn-primary" onclick="refreshRevocations()">Refresh</button>
+        <!-- Active Anchors -->
+        <section class="card">
+            <div class="card-header">
+                <h2>✅ Active Anchors</h2>
+                <button class="btn small" onclick="refreshAnchors()">Refresh</button>
+            </div>
+            <div class="tableWrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Asset ID</th>
+                            <th>Claim ID</th>
+                            <th>Endorsements</th>
+                            <th>Activated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="anchorsBody">
+                        <tr><td colspan="5" class="muted">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Pending Revocations -->
+        <section class="card">
+            <div class="card-header">
+                <h2>⚠️ Pending Revocations</h2>
+                <button class="btn small" onclick="refreshRevocations()">Refresh</button>
             </div>
             
-            <h3>Initiated by You (Awaiting Org1 Response)</h3>
-            <div class="card">
-                <table id="myRevocationsTable">
+            <h3 class="subsection-title">Initiated by You (Waiting for Org1)</h3>
+            <div class="tableWrap">
+                <table class="table">
                     <thead>
-                        <tr><th>Asset ID</th><th>Reason</th><th>Initiated At</th><th>Status</th></tr>
+                        <tr>
+                            <th>Asset ID</th>
+                            <th>Reason</th>
+                            <th>Initiated</th>
+                            <th>Status</th>
+                        </tr>
                     </thead>
                     <tbody id="myRevocationsBody">
-                        <tr><td colspan="4" class="loading">Loading...</td></tr>
+                        <tr><td colspan="4" class="muted">No pending revocations</td></tr>
                     </tbody>
                 </table>
             </div>
 
-            <h3>Awaiting Your Response (Initiated by Org1)</h3>
-            <div class="card">
-                <table id="theirRevocationsTable">
+            <h3 class="subsection-title" style="margin-top: 20px;">Initiated by Org1 (Needs Your Response)</h3>
+            <div class="tableWrap">
+                <table class="table">
                     <thead>
-                        <tr><th>Asset ID</th><th>Initiated By</th><th>Reason</th><th>Actions</th></tr>
+                        <tr>
+                            <th>Asset ID</th>
+                            <th>Initiated By</th>
+                            <th>Reason</th>
+                            <th>Actions</th>
+                        </tr>
                     </thead>
                     <tbody id="theirRevocationsBody">
-                        <tr><td colspan="4" class="loading">Loading...</td></tr>
+                        <tr><td colspan="4" class="muted">No revocations awaiting your response</td></tr>
                     </tbody>
                 </table>
             </div>
         </section>
 
-        <section id="actions" class="tab-content">
-            <div class="section-header">
-                <h2>Quick Actions</h2>
+        <!-- Actions Panel -->
+        <section class="card">
+            <div class="card-header">
+                <h2>🔧 Actions</h2>
             </div>
             
             <div class="actions-grid">
-                <div class="card action-card">
+                <div class="action-box">
                     <h3>Initiate Revocation</h3>
-                    <p>Start the revocation process for an active anchor. Requires Org1 endorsement.</p>
-                    <form id="revokeForm" onsubmit="initiateRevoke(event)">
-                        <div class="form-group">
-                            <label for="revokeAssetId">Asset ID</label>
-                            <input type="text" id="revokeAssetId" required placeholder="e.g., asset_123">
-                        </div>
-                        <div class="form-group">
-                            <label for="revokeReason">Reason</label>
-                            <textarea id="revokeReason" placeholder="Reason for revocation..."></textarea>
-                        </div>
-                        <button type="submit" class="btn btn-danger">Initiate Revocation</button>
+                    <form id="revokeForm">
+                        <label class="field">
+                            <span>Asset ID</span>
+                            <input type="text" id="revokeAssetId" placeholder="e.g., tv_TAG_20" required>
+                        </label>
+                        <label class="field">
+                            <span>Reason</span>
+                            <input type="text" id="revokeReason" placeholder="Reason for revocation" required>
+                        </label>
+                        <button type="submit" class="btn danger">Initiate Revocation</button>
                     </form>
                 </div>
-
-                <div class="card action-card">
+                
+                <div class="action-box">
                     <h3>Query Claim</h3>
-                    <p>Look up the current state of a claim.</p>
-                    <form id="queryForm" onsubmit="queryClaim(event)">
-                        <div class="form-group">
-                            <label for="queryAssetId">Asset ID</label>
-                            <input type="text" id="queryAssetId" required placeholder="e.g., asset_123">
-                        </div>
-                        <button type="submit" class="btn btn-primary">Query</button>
+                    <form id="queryForm">
+                        <label class="field">
+                            <span>Asset ID</span>
+                            <input type="text" id="queryAssetId" placeholder="e.g., tv_TAG_20" required>
+                        </label>
+                        <button type="submit" class="btn primary">Query</button>
                     </form>
-                    <div id="queryResult" class="result-box"></div>
+                    <pre id="queryResult" class="result-box"></pre>
                 </div>
             </div>
         </section>
 
-        <div id="toast" class="toast"></div>
-    </div>
+        <!-- Live Event Log -->
+        <section class="card">
+            <div class="card-header">
+                <h2>📡 Live Events</h2>
+                <button class="btn small" onclick="clearLog()">Clear</button>
+            </div>
+            <div id="eventLog" class="log"></div>
+        </section>
+    </main>
 
-    <script src="org2.js"></script>
+    <!-- Toast Notification -->
+    <div id="toast" class="toast"></div>
+
+    <script src="./org2.js"></script>
 </body>
 </html>
