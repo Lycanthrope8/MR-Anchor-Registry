@@ -1,21 +1,43 @@
-# =============================================================================
-# Crypto Config - Single Org Network (Org1 + Orderer)
-# =============================================================================
-# FIX: Added OrdererOrgs so orderer MSP gets generated
-# =============================================================================
+# ==============================================================================
+# crypto-config.yaml - Certificate Configuration for Two Organizations
+# MR Anchor Registry - Hyperledger Fabric Network
+# ==============================================================================
 
 OrdererOrgs:
   - Name: Orderer
-    Domain: example.com
+    Domain: anchor-registry.com
     EnableNodeOUs: true
     Specs:
       - Hostname: orderer
+        SANS:
+          - localhost
+          - 127.0.0.1
 
 PeerOrgs:
+  # ==============================================================================
+  # Organization 1 - Primary Anchor Publisher
+  # ==============================================================================
   - Name: Org1
-    Domain: org1.example.com
+    Domain: org1.anchor-registry.com
     EnableNodeOUs: true
     Template:
       Count: 1
+      SANS:
+        - localhost
+        - 127.0.0.1
+    Users:
+      Count: 1
+
+  # ==============================================================================
+  # Organization 2 - Secondary Anchor Validator/Endorser
+  # ==============================================================================
+  - Name: Org2
+    Domain: org2.anchor-registry.com
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+      SANS:
+        - localhost
+        - 127.0.0.1
     Users:
       Count: 1

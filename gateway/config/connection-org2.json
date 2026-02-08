@@ -1,0 +1,45 @@
+{
+    "name": "anchor-registry-org2",
+    "version": "1.0.0",
+    "client": {
+        "organization": "Org2",
+        "connection": {
+            "timeout": {
+                "peer": {
+                    "endorser": "300"
+                }
+            }
+        }
+    },
+    "organizations": {
+        "Org2": {
+            "mspid": "Org2MSP",
+            "peers": ["peer0.org2.anchor-registry.com"],
+            "certificateAuthorities": []
+        }
+    },
+    "peers": {
+        "peer0.org2.anchor-registry.com": {
+            "url": "grpcs://localhost:9051",
+            "tlsCACerts": {
+                "path": "/Users/jhossai3/work/MR-Anchor-Registry/network/crypto-config/peerOrganizations/org2.anchor-registry.com/tlsca/tlsca.org2.anchor-registry.com-cert.pem"
+            },
+            "grpcOptions": {
+                "ssl-target-name-override": "peer0.org2.anchor-registry.com",
+                "hostnameOverride": "peer0.org2.anchor-registry.com"
+            }
+        }
+    },
+    "orderers": {
+        "orderer.anchor-registry.com": {
+            "url": "grpcs://localhost:7050",
+            "tlsCACerts": {
+                "path": "/Users/jhossai3/work/MR-Anchor-Registry/network/crypto-config/ordererOrganizations/anchor-registry.com/tlsca/tlsca.anchor-registry.com-cert.pem"
+            },
+            "grpcOptions": {
+                "ssl-target-name-override": "orderer.anchor-registry.com",
+                "hostnameOverride": "orderer.anchor-registry.com"
+            }
+        }
+    }
+}

@@ -1,15 +1,13 @@
-# =============================================================================
-# ConfigTX - Single Org Network (Channel Participation API)
-# =============================================================================
-# FIX: Single org only (no Org2)
-# FIX: Uses channel participation (no system channel genesis)
-# =============================================================================
+# ==============================================================================
+# configtx.yaml - Channel Configuration for MR Anchor Registry
+# Two Organization Setup with AND Endorsement Policy
+# ==============================================================================
 
 Organizations:
   - &OrdererOrg
     Name: OrdererOrg
     ID: OrdererMSP
-    MSPDir: ../organizations/ordererOrganizations/example.com/msp
+    MSPDir: ../crypto-config/ordererOrganizations/anchor-registry.com/msp
     Policies:
       Readers:
         Type: Signature
@@ -20,11 +18,13 @@ Organizations:
       Admins:
         Type: Signature
         Rule: "OR('OrdererMSP.admin')"
+    OrdererEndpoints:
+      - orderer.anchor-registry.com:7050
 
   - &Org1
     Name: Org1MSP
     ID: Org1MSP
-    MSPDir: ../organizations/peerOrganizations/org1.example.com/msp
+    MSPDir: ../crypto-config/peerOrganizations/org1.anchor-registry.com/msp
     Policies:
       Readers:
         Type: Signature
@@ -39,8 +39,29 @@ Organizations:
         Type: Signature
         Rule: "OR('Org1MSP.peer')"
     AnchorPeers:
-      - Host: peer0.org1.example.com
+      - Host: peer0.org1.anchor-registry.com
         Port: 7051
+
+  - &Org2
+    Name: Org2MSP
+    ID: Org2MSP
+    MSPDir: ../crypto-config/peerOrganizations/org2.anchor-registry.com/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('Org2MSP.admin', 'Org2MSP.peer', 'Org2MSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('Org2MSP.admin', 'Org2MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('Org2MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('Org2MSP.peer')"
+    AnchorPeers:
+      - Host: peer0.org2.anchor-registry.com
+        Port: 9051
 
 Capabilities:
   Channel: &ChannelCapabilities
@@ -48,7 +69,7 @@ Capabilities:
   Orderer: &OrdererCapabilities
     V2_0: true
   Application: &ApplicationCapabilities
-    V2_5: true
+    V2_0: true
 
 Application: &ApplicationDefaults
   Organizations:
@@ -64,17 +85,23 @@ Application: &ApplicationDefaults
       Rule: "MAJORITY Admins"
     LifecycleEndorsement:
       Type: ImplicitMeta
-      Rule: "ANY Endorsement"
+      Rule: "MAJORITY Endorsement"
     Endorsement:
       Type: ImplicitMeta
-      Rule: "ANY Endorsement"
+      Rule: "MAJORITY Endorsement"
   Capabilities:
     <<: *ApplicationCapabilities
 
 Orderer: &OrdererDefaults
-  OrdererType: solo
+  OrdererType: etcdraft
   Addresses:
-    - orderer.example.com:7050
+    - orderer.anchor-registry.com:7050
+  EtcdRaft:
+    Consenters:
+      - Host: orderer.anchor-registry.com
+        Port: 7050
+        ClientTLSCert: ../crypto-config/ordererOrganizations/anchor-registry.com/orderers/orderer.anchor-registry.com/tls/server.crt
+        ServerTLSCert: ../crypto-config/ordererOrganizations/anchor-registry.com/orderers/orderer.anchor-registry.com/tls/server.crt
   BatchTimeout: 2s
   BatchSize:
     MaxMessageCount: 10
@@ -109,19 +136,19 @@ Channel: &ChannelDefaults
   Capabilities:
     <<: *ChannelCapabilities
 
-# =============================================================================
-# Profile for channel participation API (generates genesis block for channel)
-# =============================================================================
 Profiles:
-  SingleOrgApplicationGenesis:
+  TwoOrgsApplicationGenesis:
     <<: *ChannelDefaults
     Orderer:
       <<: *OrdererDefaults
       Organizations:
         - *OrdererOrg
-      Capabilities: *OrdererCapabilities
+      Capabilities:
+        <<: *OrdererCapabilities
     Application:
       <<: *ApplicationDefaults
       Organizations:
         - *Org1
-      Capabilities: *ApplicationCapabilities
+        - *Org2
+      Capabilities:
+        <<: *ApplicationCapabilities

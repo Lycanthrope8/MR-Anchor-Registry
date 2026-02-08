@@ -1,476 +1,356 @@
-# MR-Anchor-Registry
+# MR Anchor Registry - Two Organization Hyperledger Fabric Setup
 
-Blockchain-based spatial anchor registry for multi-user mixed reality with on-chain governance and real-time supervisor UI.
+A complete Hyperledger Fabric blockchain solution for managing Mixed Reality anchor claims with a two-organization endorsement model.
 
-## Features
-
-- **On-Chain Reject**: Supervisors can reject claims with auditable reason, timestamp, and identity recorded on the blockchain
-- **Real-Time SSE Updates**: Server-Sent Events for instant UI updates without polling
-- **Complete Audit Trail**: Full history of all claim state changes on Hyperledger Fabric
-- **Role-Based Access**: Proposer, Endorser, and Supervisor roles with API key authentication
-- **Off-Chain Payload Storage**: Large pose data stored in PostgreSQL with hash verification on-chain
-
-## Architecture
+## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SUPERVISOR WEB UI                            │
-│                    /admin/ (SSE real-time)                      │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────────┐
-│                      GATEWAY (Node.js)                          │
-│                      localhost:3000                             │
-│  • REST API for claims/assets                                   │
-│  • SSE endpoint for real-time updates                           │
-│  • Role-based authentication                                    │
-└───────────┬─────────────────────────────────┬───────────────────┘
-            │                                 │
-┌───────────▼───────────┐       ┌─────────────▼───────────────────┐
-│     FABRIC NETWORK    │       │         POSTGRESQL              │
-│   (test-network)      │       │     localhost:5433              │
-│                       │       │                                 │
-│  • Orderer :7050      │       │  Off-chain payload storage      │
-│  • Peer Org1 :7051    │       │  (pose_site, quality_metrics)   │
-│  • Peer Org2 :9051    │       │                                 │
-│                       │       │                                 │
-│  Chaincode:           │       │                                 │
-│  - ProposeAnchor      │       │                                 │
-│  - EndorseAnchor      │       │                                 │
-│  - RejectClaim (NEW)  │       │                                 │
-│  - RevokeAnchor       │       │                                 │
-│  - ReopenClaim (NEW)  │       │                                 │
-└───────────────────────┘       └─────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           MR Anchor Registry                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────┐                              ┌──────────────┐         │
+│  │   Unity      │                              │   Unity      │         │
+│  │   Client     │                              │   Client     │         │
+│  │   (Org1)     │                              │   (Org2)     │         │
+│  └──────┬───────┘                              └──────┬───────┘         │
+│         │                                             │                  │
+│         ▼                                             ▼                  │
+│  ┌──────────────────────────────────────────────────────────────┐       │
+│  │                    Gateway Server (Node.js)                   │       │
+│  │  ┌────────────┐                      ┌────────────┐          │       │
+│  │  │ Org1 Admin │                      │ Org2 Admin │          │       │
+│  │  │   Panel    │                      │   Panel    │          │       │
+│  │  └────────────┘                      └────────────┘          │       │
+│  │                                                               │       │
+│  │  ┌────────────┐                      ┌────────────┐          │       │
+│  │  │   Org1     │                      │   Org2     │          │       │
+│  │  │  Identity  │                      │  Identity  │          │       │
+│  │  └────────────┘                      └────────────┘          │       │
+│  └──────────────────────────┬───────────────────────────────────┘       │
+│                             │                                            │
+│                             ▼                                            │
+│  ┌──────────────────────────────────────────────────────────────┐       │
+│  │              Hyperledger Fabric Network                       │       │
+│  │                                                               │       │
+│  │  ┌──────────┐    ┌──────────┐    ┌──────────┐               │       │
+│  │  │ Orderer  │    │  Peer0   │    │  Peer0   │               │       │
+│  │  │          │    │  Org1    │    │  Org2    │               │       │
+│  │  └──────────┘    └──────────┘    └──────────┘               │       │
+│  │                                                               │       │
+│  │  ┌──────────────────────────────────────────────────┐        │       │
+│  │  │           anchor-registry Chaincode              │        │       │
+│  │  │  Endorsement Policy: AND(Org1MSP, Org2MSP)      │        │       │
+│  │  └──────────────────────────────────────────────────┘        │       │
+│  └──────────────────────────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Claim Lifecycle States
+## Claim Lifecycle
 
 ```
-                    ┌─────────────┐
-                    │  PROPOSED   │
-                    └──────┬──────┘
+                    ┌──────────────┐
+                    │   PROPOSED   │◄──────── Org1 or Org2 proposes
+                    └──────┬───────┘
                            │
-          ┌────────────────┼────────────────┐
-          │                │                │
-          ▼                ▼                ▼
-    ┌──────────┐    ┌──────────┐    ┌──────────┐
-    │  ACTIVE  │    │ REJECTED │    │ CONFLICT │
-    └────┬─────┘    └────┬─────┘    └──────────┘
-         │               │
-         ▼               ▼
-    ┌──────────┐    ┌──────────┐
-    │ REVOKED  │    │ PROPOSED │ (via Reopen)
-    └──────────┘    └──────────┘
+              ┌────────────┴────────────┐
+              │                         │
+              ▼                         ▼
+       ┌──────────┐              ┌──────────┐
+       │  ACTIVE  │              │ REJECTED │
+       └────┬─────┘              └──────────┘
+            │
+            │ Either org initiates revoke
+            ▼
+    ┌───────────────┐
+    │ REVOKE_PENDING│◄─── Requires other org's endorsement
+    └───────┬───────┘
+            │
+   ┌────────┴────────┐
+   │                 │
+   ▼                 ▼
+┌──────────┐   ┌──────────┐
+│ REVOKED  │   │  ACTIVE  │◄─── Revoke rejected, back to ACTIVE
+└──────────┘   └──────────┘
+```
+
+## Directory Structure
+
+```
+MR-Anchor-Registry/
+├── network/
+│   ├── crypto-config.yaml          # Org1 + Org2 certificate config
+│   ├── configtx/
+│   │   └── configtx.yaml           # Channel & endorsement policies
+│   ├── docker/
+│   │   └── docker-compose.yaml     # Network containers
+│   ├── crypto-config/              # Generated certificates (after ./scripts/generate.sh)
+│   └── channel-artifacts/          # Generated channel files
+│
+├── chaincode/
+│   └── anchor-registry/
+│       ├── lib/
+│       │   └── anchor-registry.js  # Smart contract with revocation logic
+│       ├── index.js
+│       └── package.json
+│
+├── gateway/
+│   ├── src/
+│   │   ├── server.js               # Express server with dual-org support
+│   │   ├── services/
+│   │   │   ├── fabricClient.js     # Fabric Gateway client
+│   │   │   └── logger.js
+│   │   └── routes/
+│   │       ├── claims.js           # Propose/endorse/reject endpoints
+│   │       ├── admin.js            # Revocation workflow endpoints
+│   │       └── events.js           # SSE stream + snapshot
+│   ├── config/
+│   │   ├── connection-org1.json    # Org1 connection profile
+│   │   └── connection-org2.json    # Org2 connection profile
+│   └── admin-panel/
+│       ├── org1/                   # Blue-themed Org1 admin UI
+│       └── org2/                   # Green-themed Org2 admin UI
+│
+├── unity/
+│   └── Gateway/
+│       ├── GatewayClient.cs        # REST client with revocation methods
+│       ├── GatewayConfig.cs        # Config with org identity
+│       ├── GatewaySync.cs          # Main orchestrator
+│       └── AnchorClaimState.cs     # State models with REVOKE_PENDING
+│
+└── scripts/
+    ├── generate.sh                 # Generate crypto & channel artifacts
+    ├── channel.sh                  # Create/join channel
+    └── chaincode.sh                # Deploy chaincode
+```
+
+## Prerequisites
+
+1. **Docker & Docker Compose**
+2. **Node.js 16+**
+3. **Hyperledger Fabric binaries** (from fabric-samples)
+
+Ensure `fabric-samples` is at the same level as this project:
+```
+parent-directory/
+├── fabric-samples/
+│   ├── bin/
+│   │   ├── cryptogen
+│   │   ├── configtxgen
+│   │   ├── peer
+│   │   └── ...
+│   └── config/
+└── MR-Anchor-Registry/
 ```
 
 ## Quick Start
 
-### Prerequisites
-
-- Docker & Docker Compose
-- Node.js >= 18
-- Fabric samples at `../fabric-samples` (relative to this project)
-
-### Step-by-Step Backend Bring-Up
+### 1. Generate Crypto Materials
 
 ```bash
-# 1. Ensure fabric-samples is in place
-cd ~/work
-ls fabric-samples/test-network  # Should exist
-
-# 2. Navigate to this project
 cd MR-Anchor-Registry
-
-# 3. Start everything (Fabric + Chaincode + PostgreSQL + Gateway)
-./up.sh
-
-# Expected output:
-# ==========================================
-#   Backend Started Successfully!
-# ==========================================
-# Services running:
-#   • Fabric Network (test-network)
-#   • Chaincode: anchorregistry on channel mychannel
-#   • PostgreSQL: localhost:5433
-#   • Gateway: http://localhost:3000
+chmod +x scripts/*.sh
+./scripts/generate.sh
 ```
 
-### Verify Health
+### 2. Start the Network
 
 ```bash
-curl http://localhost:3000/health
+cd network/docker
+docker-compose up -d
 ```
 
-Expected response:
-
-```json
-{
-  "status": "healthy",
-  "postgres": "connected",
-  "fabric": "connected",
-  "fabric_mock": false,
-  "sse_clients": 0,
-  "version": "2.0.0"
-}
-```
-
-### Using the CLI (Proposer Tasks)
+### 3. Create Channel & Join Peers
 
 ```bash
-# Check health
-node scripts/cli.js health
-
-# Propose a new anchor claim
-node scripts/cli.js propose my-desk --x=1.5 --y=2.0 --z=0.5
-
-# List claims for an asset
-node scripts/cli.js list my-desk
-
-# Get active anchor
-node scripts/cli.js resolve my-desk
-
-# Get claim details
-node scripts/cli.js get claim-abc123456789
-
-# Get claim history (audit trail)
-node scripts/cli.js history claim-abc123456789
+./scripts/channel.sh all
 ```
 
-### Using the Supervisor UI
-
-1. Open in browser: `http://localhost:3000/admin/`
-2. Enter supervisor API key: `supervisor-key-001`
-3. Enter asset ID (e.g., `my-desk`)
-4. Click "Load"
-5. Click "Connect SSE" for real-time updates
-6. Use buttons to:
-   - **Approve**: Endorse a PROPOSED claim (may activate it)
-   - **Reject**: Reject with reason (recorded on-chain)
-   - **Revoke**: Revoke an ACTIVE anchor
-   - **Details**: View full claim info and history
-
-### Shutdown
+### 4. Deploy Chaincode
 
 ```bash
-# Stop gateway and PostgreSQL (keep Fabric running)
-./down.sh
-
-# Stop everything including Fabric
-./down.sh --fabric
+./scripts/chaincode.sh deploy
 ```
 
-## API Reference
-
-### Authentication
-
-All endpoints (except `/health`) require `x-api-key` header.
-
-| API Key                | Role       | Permissions                         |
-| ---------------------- | ---------- | ----------------------------------- |
-| `proposer-key-001`   | proposer   | Create claims                       |
-| `endorser-key-001`   | endorser   | Endorse claims                      |
-| `supervisor-key-001` | supervisor | All actions including reject/revoke |
-
-### Endpoints
-
-#### Health
-
-```
-GET /health
-```
-
-#### Claims
+### 5. Start Gateway Server
 
 ```bash
-# Propose a new claim
-POST /claims/propose
-Content-Type: application/json
-x-api-key: proposer-key-001
-
-{
-  "asset_id": "my-desk",
-  "pose_site": {
-    "position": {"x": 1.5, "y": 2.0, "z": 0.5},
-    "rotation": {"qx": 0, "qy": 0, "qz": 0, "qw": 1}
-  },
-  "quality_metrics": {
-    "stability_rms": 0.02,
-    "confidence_mean": 0.9
-  }
-}
-
-# Endorse a claim
-POST /claims/{claim_id}/endorse
-x-api-key: endorser-key-001
-
-# Reject a claim (ON-CHAIN - supervisor only)
-POST /claims/{claim_id}/reject
-x-api-key: supervisor-key-001
-Content-Type: application/json
-
-{
-  "reason": "Pose accuracy below threshold"
-}
-
-# Reopen a rejected claim (supervisor only)
-POST /claims/{claim_id}/reopen
-x-api-key: supervisor-key-001
-
-{
-  "reason": "Re-review after corrections"
-}
-
-# Get claim details
-GET /claims/{claim_id}
-x-api-key: proposer-key-001
-
-# Get claim history
-GET /claims/{claim_id}/history
-x-api-key: proposer-key-001
+cd gateway
+npm install
+npm start
 ```
 
-#### Assets
+### 6. Access Admin Panels
 
-```bash
-# Resolve active anchor
-GET /assets/{asset_id}/resolve
-x-api-key: proposer-key-001
+- **Org1 Admin:** http://localhost:3000/admin-panel/org1
+- **Org2 Admin:** http://localhost:3000/admin-panel/org2
 
-# List all claims for asset
-GET /assets/{asset_id}/claims
-x-api-key: proposer-key-001
+## API Endpoints
 
-# Revoke active anchor (supervisor only)
-POST /assets/{asset_id}/revoke
-x-api-key: supervisor-key-001
-Content-Type: application/json
+### Claims (Unity Client)
 
-{
-  "reason": "Asset relocated"
-}
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/claims/propose` | Propose new anchor |
+| POST | `/claims/endorse` | Endorse pending claim |
+| POST | `/claims/reject` | Reject pending claim |
+| GET | `/claims/:assetId` | Get claim details |
 
-# Get audit log for asset
-GET /assets/{asset_id}/audit?limit=100
-x-api-key: proposer-key-001
+### Admin (Revocation Workflow)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/admin/revoke` | Initiate revocation |
+| POST | `/admin/endorse-revoke` | Endorse revocation |
+| POST | `/admin/reject-revoke` | Reject revocation |
+| GET | `/admin/pending-revocations` | List all pending |
+| GET | `/admin/pending-revocations/for-me` | List requiring my action |
+| GET | `/admin/anchors` | List active anchors |
+
+### Events (SSE)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/events/stream` | SSE event stream |
+| GET | `/events/snapshot` | Current state snapshot |
+
+## Revocation Workflow
+
+### 1. Org1 Initiates Revocation
+
+```javascript
+// From Unity (Org1)
+GatewaySync.Instance.RevokeAnchor("asset_123", "Quality degraded");
+
+// Or via HTTP
+POST /admin/revoke
+Headers: x-org-id: org1
+Body: { "asset_id": "asset_123", "reason": "Quality degraded" }
 ```
 
-#### Admin/Supervisor API
+### 2. State Changes to REVOKE_PENDING
 
-```bash
-# SSE event stream (real-time updates)
-GET /admin/api/events/stream?asset_id=my-desk
-x-api-key: supervisor-key-001
+The chaincode sets:
+- `state` → `REVOKE_PENDING`
+- `revokeInitiatedBy` → `Org1MSP`
+- `requiredEndorser` → `Org2MSP`
 
-# Get recent events (polling fallback)
-GET /admin/api/events?limit=50
-x-api-key: supervisor-key-001
+### 3. Org2 Must Respond
 
-# Get complete asset data
-GET /admin/api/asset/{asset_id}
-x-api-key: supervisor-key-001
-
-# Approve via admin API
-POST /admin/api/decision/{asset_id}/approve
-x-api-key: supervisor-key-001
-
-{
-  "claim_id": "claim-abc123",
-  "reason": "Approved by supervisor"
-}
-
-# Reject via admin API (ON-CHAIN)
-POST /admin/api/decision/{asset_id}/reject
-x-api-key: supervisor-key-001
-
-{
-  "claim_id": "claim-abc123",
-  "reason": "Quality metrics insufficient"
-}
-
-# Revoke via admin API
-POST /admin/api/decision/{asset_id}/revoke
-x-api-key: supervisor-key-001
-
-{
-  "reason": "Asset decommissioned"
-}
+**Option A: Endorse (Complete Revocation)**
+```javascript
+// From Unity (Org2)
+GatewaySync.Instance.EndorseRevoke("asset_123");
 ```
+Result: Anchor is **REVOKED** and **deleted** from active registry.
 
-## Curl Examples
-
-### Complete Workflow Example
-
-```bash
-# 1. Check health
-curl -s http://localhost:3000/health | jq
-
-# 2. Propose a claim
-curl -s -X POST http://localhost:3000/claims/propose \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: proposer-key-001" \
-  -d '{
-    "asset_id": "test-chair",
-    "pose_site": {"position": {"x": 1, "y": 2, "z": 3}, "rotation": {"qw": 1}},
-    "quality_metrics": {"stability_rms": 0.02, "confidence_mean": 0.9}
-  }' | jq
-
-# Save the claim_id from response, e.g., claim-abc123
-
-# 3. List claims
-curl -s http://localhost:3000/assets/test-chair/claims \
-  -H "x-api-key: proposer-key-001" | jq
-
-# 4. Supervisor approves (endorses) - this activates if threshold met
-curl -s -X POST http://localhost:3000/claims/CLAIM_ID_HERE/endorse \
-  -H "x-api-key: supervisor-key-001" | jq
-
-# 5. Check active anchor
-curl -s http://localhost:3000/assets/test-chair/resolve \
-  -H "x-api-key: proposer-key-001" | jq
-
-# 6. (Alternative) Supervisor rejects instead
-curl -s -X POST http://localhost:3000/claims/CLAIM_ID_HERE/reject \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: supervisor-key-001" \
-  -d '{"reason": "Position not accurate enough"}' | jq
-
-# 7. Supervisor revokes active anchor
-curl -s -X POST http://localhost:3000/assets/test-chair/revoke \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: supervisor-key-001" \
-  -d '{"reason": "Asset removed from space"}' | jq
-
-# 8. View claim history (audit trail)
-curl -s http://localhost:3000/claims/CLAIM_ID_HERE/history \
-  -H "x-api-key: proposer-key-001" | jq
+**Option B: Reject (Keep Active)**
+```javascript
+// From Unity (Org2)
+GatewaySync.Instance.RejectRevoke("asset_123", "Anchor still needed");
 ```
+Result: Anchor returns to **ACTIVE** state.
 
-## On-Chain Reject Details
+## Unity Integration
 
-When a supervisor rejects a claim, the following is recorded on the blockchain:
+### Setup
 
-```json
+1. Copy files from `unity/Gateway/` to your Unity project
+2. Create a `GatewayConfig` ScriptableObject:
+   - Assets → Create → AR Detection → Gateway Config
+3. Configure:
+   - Gateway URL
+   - Organization ID (`org1` or `org2`)
+   - API Key
+
+### Usage
+
+```csharp
+// Propose anchor
+GatewaySync.Instance.ProposeAnchor(
+    assetId: "asset_123",
+    worldPose: currentPose,
+    confidence: 0.95f,
+    stabilityRms: 0.02f,
+    observationCount: 50
+);
+
+// Initiate revocation (as current org)
+GatewaySync.Instance.RevokeAnchor("asset_123", "Reason");
+
+// Respond to revocation (from other org)
+GatewaySync.Instance.EndorseRevoke("asset_123");
+// or
+GatewaySync.Instance.RejectRevoke("asset_123", "Keep it");
+
+// Check pending revocations
+foreach (var state in GatewaySync.Instance.GetPendingRevocationsRequiringMyAction())
 {
-  "claimId": "claim-abc123",
-  "state": "REJECTED",
-  "rejectedAt": "2025-02-01T12:34:56.789Z",
-  "rejectedBy": "supervisor-key-001",
-  "rejectionReason": "Quality metrics below threshold",
-  "rejectionTxId": "tx-xyz789..."
+    Debug.Log($"Need to respond to: {state.assetId}");
 }
 ```
 
-This data is:
+### Events
 
-- **Immutable**: Cannot be altered after recording
-- **Auditable**: Full history available via `GetClaimHistory`
-- **Timestamped**: Uses blockchain transaction timestamp
-- **Attributed**: Records supervisor identity
+```csharp
+void Start()
+{
+    GatewaySync.Instance.OnRevokePending.AddListener(OnRevokePending);
+    GatewaySync.Instance.OnRevokeCompleted.AddListener(OnRevokeCompleted);
+}
 
-A rejected claim **cannot** be endorsed/activated unless explicitly reopened by a supervisor using the `ReopenClaim` function.
+void OnRevokePending(string assetId, string initiatedBy)
+{
+    Debug.Log($"Revocation pending for {assetId}, initiated by {initiatedBy}");
+}
 
-## File Structure
-
-```
-MR-Anchor-Registry/
-├── chaincode/
-│   └── anchor-registry/
-│       ├── index.js
-│       ├── package.json
-│       └── lib/
-│           └── anchorRegistry.js      # Chaincode with REJECT support
-├── gateway/
-│   └── registry-gateway/
-│       ├── Dockerfile
-│       ├── package.json
-│       └── src/
-│           ├── index.js               # Main entry point
-│           ├── config.js              # Configuration
-│           ├── admin/
-│           │   ├── routes.js          # Admin API with SSE
-│           │   └── public/
-│           │       ├── index.html     # Supervisor UI
-│           │       ├── styles.css
-│           │       └── app.js         # UI with SSE client
-│           ├── db/
-│           │   └── postgres.js        # PostgreSQL client
-│           ├── fabric/
-│           │   └── client.js          # Fabric Gateway client
-│           ├── middleware/
-│           │   ├── auth.js            # Authentication
-│           │   └── errorHandler.js
-│           ├── routes/
-│           │   ├── claims.js          # Claims API
-│           │   ├── assets.js          # Assets API
-│           │   └── health.js          # Health check
-│           └── utils/
-│               ├── hash.js            # Payload hashing
-│               ├── logger.js          # Winston logger
-│               └── sseEventBus.js     # SSE event system
-├── scripts/
-│   └── cli.js                         # CLI tool
-├── storage/
-│   └── init.sql                       # PostgreSQL schema
-├── up.sh                              # Start script
-├── down.sh                            # Stop script
-└── README.md                          # This file
+void OnRevokeCompleted(string assetId)
+{
+    // Remove anchor visualization
+}
 ```
 
-## Environment Variables
+## Endorsement Policy
 
-| Variable               | Default                          | Description                   |
-| ---------------------- | -------------------------------- | ----------------------------- |
-| `WORK_DIR`           | `~/work`                       | Base directory                |
-| `MR_ANCHOR_DIR`      | `$WORK_DIR/MR-Anchor-Registry` | Project directory             |
-| `FABRIC_SAMPLES_DIR` | `$WORK_DIR/fabric-samples`     | Fabric samples                |
-| `GATEWAY_PORT`       | `3000`                         | Gateway HTTP port             |
-| `POSTGRES_PORT`      | `5433`                         | PostgreSQL port               |
-| `POSTGRES_DB`        | `anchor_registry`              | Database name                 |
-| `POSTGRES_USER`      | `anchor_admin`                 | Database user                 |
-| `POSTGRES_PASSWORD`  | `anchor_secret_2025`           | Database password             |
-| `FABRIC_CHANNEL`     | `mychannel`                    | Fabric channel                |
-| `FABRIC_CHAINCODE`   | `anchorregistry`               | Chaincode name                |
-| `FABRIC_MOCK`        | `false`                        | Must be false for real Fabric |
-| `API_KEYS`           | (see config.js)                  | API key mappings              |
-| `SUPERVISOR_IDS`     | `supervisor-key-001`           | Supervisor keys               |
+The chaincode uses **AND** endorsement policy:
+```
+AND('Org1MSP.peer', 'Org2MSP.peer')
+```
+
+This means:
+- **Proposals** require both orgs to endorse (Org1 proposes → Org2 endorses)
+- **Revocations** require both orgs to agree (One initiates → Other endorses)
+
+## Security Notes
+
+1. API keys should be rotated and kept secure
+2. In production, use proper certificate management
+3. Consider enabling TLS for all connections
+4. Implement proper RBAC in admin panels
 
 ## Troubleshooting
 
-### Gateway won't start
-
+### Chaincode Issues
 ```bash
-# Check if Fabric is running
-docker ps | grep peer0.org1
-
-# Check logs
-tail -f gateway.log
+docker logs peer0.org1.anchor-registry.com
+docker logs peer0.org2.anchor-registry.com
 ```
 
-### Chaincode errors
-
+### Network Issues
 ```bash
-# Check chaincode is deployed
-export PATH=$HOME/work/fabric-samples/bin:$PATH
-export FABRIC_CFG_PATH=$HOME/work/fabric-samples/config/
-peer lifecycle chaincode querycommitted -C mychannel -n anchorregistry
+docker ps -a
+docker-compose -f network/docker/docker-compose.yaml logs
 ```
 
-### PostgreSQL connection issues
-
+### Reset Everything
 ```bash
-# Check PostgreSQL is running
-docker ps | grep mr-anchor-postgres
-
-# Check logs
-docker logs mr-anchor-postgres
+cd network/docker
+docker-compose down -v
+cd ../..
+rm -rf network/crypto-config network/channel-artifacts
+./scripts/generate.sh
 ```
-
-### SSE not connecting
-
-- Ensure you're using the correct API key
-- Check browser console for errors
-- Try the polling fallback: `GET /admin/api/events`
 
 ## License
 
-MIT
+Apache 2.0

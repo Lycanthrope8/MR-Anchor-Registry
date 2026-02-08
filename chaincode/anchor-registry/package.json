@@ -1,16 +1,24 @@
 {
-  "name": "anchor-registry-chaincode",
+  "name": "anchor-registry",
   "version": "1.0.0",
-  "description": "Spatial Anchor Registry Chaincode",
+  "description": "MR Anchor Registry Chaincode - Two Organization Model",
   "main": "index.js",
+  "engines": {
+    "node": ">=16"
+  },
   "scripts": {
-    "start": "fabric-chaincode-node start"
+    "start": "fabric-chaincode-node start",
+    "test": "mocha --recursive ./test"
   },
   "dependencies": {
-    "fabric-contract-api": "2.5.4",
-    "fabric-shim": "2.5.4"
+    "fabric-contract-api": "^2.5.0",
+    "fabric-shim": "^2.5.0"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  "devDependencies": {
+    "chai": "^4.3.6",
+    "mocha": "^10.0.0",
+    "sinon": "^14.0.0"
+  },
+  "author": "MR Anchor Registry",
+  "license": "Apache-2.0"
 }

@@ -1,0 +1,26 @@
+{
+  "name": "anchor-registry-gateway",
+  "version": "1.0.0",
+  "description": "MR Anchor Registry Gateway - Two Organization Support",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "start:org1": "ORG=org1 node src/server.js",
+    "start:org2": "ORG=org2 PORT=3001 node src/server.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@hyperledger/fabric-gateway": "^1.4.0",
+    "@grpc/grpc-js": "^1.9.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.0",
+    "winston": "^3.10.0"
+  },
+  "devDependencies": {
+    "jest": "^29.6.0",
+    "nodemon": "^3.0.1"
+  }
+}
