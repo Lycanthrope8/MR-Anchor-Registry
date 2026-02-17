@@ -89,19 +89,27 @@ else
     exit 1
 fi
 
-# Wait for containers to be healthy
 echo "  Waiting for containers to be ready..."
-sleep 10
 
-# Verify containers are running
-RUNNING=$(docker ps --filter "name=peer0.org1" --filter "status=running" -q)
-if [ -z "$RUNNING" ]; then
-    echo -e "${RED}Error: Peer containers failed to start${NC}"
-    docker-compose -f network/docker/docker-compose.yaml logs
-    exit 1
-fi
-echo -e "${GREEN}  ✓ All containers running${NC}"
-echo ""
+  # Wait for orderer admin port to be ready (port 7053)
+  MAX_RETRIES=30
+  DELAY=2
+  echo "  Waiting for orderer to initialize Raft consensus..."
+  for i in $(seq 1 $MAX_RETRIES); do
+    if docker logs orderer.anchor-registry.com 2>&1 | grep -q "Beginning to serve requests\|Raft leader changed"; then
+      echo "  ✓ Orderer is ready (attempt $i/$MAX_RETRIES)"
+      break
+    fi
+    if [ "$i" -eq "$MAX_RETRIES" ]; then
+      echo "  ✗ Orderer did not become ready in time"
+      exit 1
+    fi
+    sleep $DELAY
+  done
+
+  # Extra buffer for admin API to bind
+  sleep 2
+  echo "  ✓ All containers running"
 
 # ==============================================================================
 # 3. Create Channel

@@ -4,11 +4,16 @@
  * DUAL ENDORSEMENT MODEL - Both Org1 AND Org2 must explicitly endorse
  * ==============================================================================
  * 
+ * PATCH: Removed global EVENT_COUNTER key to eliminate MVCC_READ_CONFLICT.
+ * Event IDs now use ctx.stub.getTxID() with an in-memory per-tx suffix.
+ * Event records are keyed by TxID, not a counter — zero shared-key writes.
+ * Governance is UNCHANGED: BOTH Org1 AND Org2 must endorse.
+ * 
  * WORKFLOW:
- * 1. Unity/Device proposes anchor → PROPOSED (no endorsements yet)
- * 2. Org1 Admin clicks Endorse → endorsements.Org1MSP = true
- * 3. Org2 Admin clicks Endorse → endorsements.Org2MSP = true
- * 4. When BOTH are true → ACTIVE
+ * 1. Unity/Device proposes anchor    -> PROPOSED (no endorsements yet)
+ * 2. Org1 Admin clicks Endorse       -> endorsements.Org1MSP = true
+ * 3. Org2 Admin clicks Endorse       -> endorsements.Org2MSP = true
+ * 4. When BOTH are true              -> ACTIVE
  * 
  * CLAIM STATES:
  * - PROPOSED: Initial claim, waiting for both org endorsements
@@ -53,8 +58,7 @@ class AnchorRegistryContract extends Contract {
     async InitLedger(ctx) {
         console.log('============= START : Initialize Ledger ===========');
         console.log('Dual Endorsement Model - Both Org1 AND Org2 must endorse');
-        
-        await ctx.stub.putState('EVENT_COUNTER', Buffer.from('0'));
+        console.log('Event IDs use TxID (no global counter)');
         
         const txTimestamp = ctx.stub.getTxTimestamp();
         const timestamp = new Date(txTimestamp.seconds.toNumber() * 1000).toISOString();
@@ -67,7 +71,7 @@ class AnchorRegistryContract extends Contract {
             requiredEndorsers: ['Org1MSP', 'Org2MSP']
         };
         
-        const eventId = await this._generateEventId(ctx);
+        const eventId = this._generateEventId(ctx);
         await ctx.stub.putState(`${PREFIX_EVENT}${eventId}`, Buffer.from(JSON.stringify(initEvent)));
         
         console.log('============= END : Initialize Ledger ===========');
@@ -164,7 +168,7 @@ class AnchorRegistryContract extends Contract {
         await ctx.stub.putState(existingClaimKey, Buffer.from(JSON.stringify(claim)));
         
         // Emit event
-        const eventId = await this._emitEvent(ctx, 'CLAIM_PROPOSED', {
+        const eventId = this._emitEvent(ctx, 'CLAIM_PROPOSED', {
             claimId,
             assetId,
             proposedViaOrg: signingMspId,
@@ -303,7 +307,7 @@ class AnchorRegistryContract extends Contract {
         await ctx.stub.putState(claimKey, Buffer.from(JSON.stringify(claim)));
         
         // Emit event
-        const eventId = await this._emitEvent(ctx, eventType, eventData);
+        const eventId = this._emitEvent(ctx, eventType, eventData);
         
         console.log(`============= END : EndorseClaim ===========`);
         
@@ -369,7 +373,7 @@ class AnchorRegistryContract extends Contract {
         await ctx.stub.putState(claimKey, Buffer.from(JSON.stringify(claim)));
         
         // Emit event
-        const eventId = await this._emitEvent(ctx, 'CLAIM_REJECTED', {
+        const eventId = this._emitEvent(ctx, 'CLAIM_REJECTED', {
             claimId: claim.claimId,
             assetId,
             rejectedBy: mspId,
@@ -449,7 +453,7 @@ class AnchorRegistryContract extends Contract {
         await ctx.stub.putState(revokeKey, Buffer.from(JSON.stringify(revokeRequest)));
         
         // Emit event
-        const eventId = await this._emitEvent(ctx, 'REVOKE_INITIATED', {
+        const eventId = this._emitEvent(ctx, 'REVOKE_INITIATED', {
             claimId: claim.claimId,
             assetId,
             initiatedBy: mspId,
@@ -529,7 +533,7 @@ class AnchorRegistryContract extends Contract {
         await ctx.stub.deleteState(revokeKey);
         
         // Emit event
-        const eventId = await this._emitEvent(ctx, 'CLAIM_REVOKED', {
+        const eventId = this._emitEvent(ctx, 'CLAIM_REVOKED', {
             claimId: claim.claimId,
             assetId,
             initiatedBy: claim.revokeInitiatedBy,
@@ -600,7 +604,7 @@ class AnchorRegistryContract extends Contract {
         await ctx.stub.deleteState(revokeKey);
         
         // Emit event
-        const eventId = await this._emitEvent(ctx, 'REVOKE_REJECTED', {
+        const eventId = this._emitEvent(ctx, 'REVOKE_REJECTED', {
             claimId: claim.claimId,
             assetId,
             initiatedBy: claim.revokeInitiatedBy,
@@ -724,6 +728,7 @@ class AnchorRegistryContract extends Contract {
 
     /**
      * GetSnapshot - Get current state snapshot for SSE clients
+     * PATCH: No longer reads EVENT_COUNTER. last_event_id derived from TxID.
      */
     async GetSnapshot(ctx) {
         const claims = [];
@@ -747,14 +752,10 @@ class AnchorRegistryContract extends Contract {
         }
         await iterator.close();
         
-        // Get last event ID
-        const eventCounter = await ctx.stub.getState('EVENT_COUNTER');
-        const lastEventId = eventCounter ? eventCounter.toString() : '0';
-        
         return JSON.stringify({
             success: true,
             assets: claims,
-            last_event_id: `evt_${lastEventId}`
+            last_event_id: `txsnap_${ctx.stub.getTxID().substring(0, 8)}`
         });
     }
 
@@ -810,17 +811,32 @@ class AnchorRegistryContract extends Contract {
         return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     }
 
-    async _generateEventId(ctx) {
-        const counterKey = 'EVENT_COUNTER';
-        let counterData = await ctx.stub.getState(counterKey);
-        let counter = counterData ? parseInt(counterData.toString()) : 0;
-        counter++;
-        await ctx.stub.putState(counterKey, Buffer.from(counter.toString()));
-        return `evt_${counter}`;
+    /**
+     * Generate a conflict-free event ID using the Fabric TxID.
+     * Multiple events within the same tx get an in-memory suffix.
+     * NO ledger writes to any shared key — eliminates MVCC_READ_CONFLICT.
+     *
+     * NOTE: This is now a synchronous method (no await needed).
+     */
+    _generateEventId(ctx) {
+        const txId = ctx.stub.getTxID();
+        // Track per-tx suffix in a simple property on ctx (safe within one tx)
+        if (!ctx._eventSuffix) {
+            ctx._eventSuffix = 0;
+        }
+        ctx._eventSuffix++;
+        return `${txId}:${ctx._eventSuffix}`;
     }
 
-    async _emitEvent(ctx, eventType, data) {
-        const eventId = await this._generateEventId(ctx);
+    /**
+     * Emit a chaincode event and store an event record.
+     * Event record is keyed by TxID-based ID — no shared counter writes.
+     *
+     * NOTE: This is now a synchronous method (returns eventId, not a Promise).
+     * The putState for event storage is still async but we use the per-tx unique key.
+     */
+    _emitEvent(ctx, eventType, data) {
+        const eventId = this._generateEventId(ctx);
         const timestamp = new Date().toISOString();
         
         const event = {
@@ -830,8 +846,8 @@ class AnchorRegistryContract extends Contract {
             ...data
         };
         
-        // Store event for replay
-        await ctx.stub.putState(`${PREFIX_EVENT}${eventId}`, Buffer.from(JSON.stringify(event)));
+        // Store event for replay (keyed by txId-based ID, no contention)
+        ctx.stub.putState(`${PREFIX_EVENT}${eventId}`, Buffer.from(JSON.stringify(event)));
         
         // Emit chaincode event
         ctx.stub.setEvent(eventType, Buffer.from(JSON.stringify(event)));

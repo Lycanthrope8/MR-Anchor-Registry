@@ -1,7 +1,7 @@
 /**
  * ==============================================================================
  * events.js - Server-Sent Events (SSE) for real-time updates
- * Fixed: Proper event broadcasting to all connected clients
+ * PHASE 1: Added req_id propagation into SSE events for time-to-consistency
  * ==============================================================================
  */
 
@@ -25,31 +25,38 @@ function generateEventId() {
 
 /**
  * Broadcast event to ALL connected SSE clients
- * This is the key function - called from other routes after chaincode operations
+ * PHASE 1: Now accepts optional reqId for experiment traceability
  */
-function broadcastEvent(eventType, eventData) {
+function broadcastEvent(eventType, eventData, reqId) {
     const eventId = generateEventId();
     const timestamp = new Date().toISOString();
+    const broadcastTimeMs = Date.now();
     
     const event = {
         event_id: eventId,
         type: eventType,
         timestamp,
+        broadcast_time_ms: broadcastTimeMs,
         ...eventData
     };
     
+    // PHASE 1: Propagate req_id if provided
+    if (reqId) {
+        event.req_id = reqId;
+    }
+    
     const sseData = formatSseMessage(eventId, eventType, event);
     
-    logger.info(`Broadcasting SSE event: ${eventType} to ${clients.size} clients`);
+    logger.info(`Broadcasting SSE event: ${eventType} to ${clients.size} clients` +
+                (reqId ? ` (req_id=${reqId})` : ''));
     
     // Send to all connected clients
     clients.forEach((res, clientId) => {
         try {
             res.write(sseData);
-            logger.info(`  → Sent to ${clientId}`);
+            logger.info(`  -> Sent to ${clientId}`);
         } catch (error) {
-            logger.error(`  → Failed to send to ${clientId}: ${error.message}`);
-            // Remove dead client
+            logger.error(`  -> Failed to send to ${clientId}: ${error.message}`);
             clients.delete(clientId);
         }
     });
@@ -73,21 +80,17 @@ function formatSseMessage(eventId, eventType, data) {
  * GET /events/stream
  */
 router.get('/stream', (req, res) => {
-    // Set SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+    res.setHeader('X-Accel-Buffering', 'no');
     
-    // Generate client ID
     const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    // Store client connection
     clients.set(clientId, res);
     logger.info(`SSE connection opened: ${clientId} (total: ${clients.size})`);
     
-    // Send initial connection event
     const connectEvent = formatSseMessage(
         generateEventId(),
         'CONNECTED',
@@ -95,7 +98,6 @@ router.get('/stream', (req, res) => {
     );
     res.write(connectEvent);
     
-    // Heartbeat to keep connection alive
     const heartbeatInterval = setInterval(() => {
         try {
             const heartbeat = formatSseMessage(
@@ -110,7 +112,6 @@ router.get('/stream', (req, res) => {
         }
     }, 30000);
     
-    // Handle client disconnect
     req.on('close', () => {
         clearInterval(heartbeatInterval);
         clients.delete(clientId);
@@ -166,7 +167,6 @@ router.post('/emit', (req, res) => {
     res.json({ success: true, event_id: eventId, clients_notified: clients.size });
 });
 
-// Export router and broadcast function
 module.exports = router;
 module.exports.broadcastEvent = broadcastEvent;
 module.exports.getClientCount = () => clients.size;

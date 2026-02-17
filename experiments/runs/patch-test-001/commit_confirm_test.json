@@ -1,0 +1,436 @@
+{
+  "metadata": {
+    "run_id": "patch-test-001",
+    "lane": "B",
+    "gateway": "http://localhost:3000",
+    "count": 50,
+    "prefix": "bench-1771360169523-",
+    "delay_between_ms": 200,
+    "timestamp": "2026-02-17T20:31:18.493Z"
+  },
+  "results": {
+    "attempted_count": 50,
+    "committed_success_count": 50,
+    "failed_count": 0,
+    "success_rate_pct": 100
+  },
+  "failure_reasons": {},
+  "propose_latency_stats": {
+    "count": 50,
+    "min_ms": 1828,
+    "p50_ms": 1855,
+    "mean_ms": 1858.12,
+    "p95_ms": 1861,
+    "p99_ms": 2104,
+    "max_ms": 2104
+  },
+  "verification": {
+    "active_in_anchors": 50,
+    "active_in_snapshot": 50,
+    "expected": 50,
+    "wait_duration_ms": 6129,
+    "all_passed": true
+  },
+  "proposals": [
+    {
+      "asset_id": "bench-1771360169523-0000",
+      "req_id": "req-patch-test-001-0",
+      "duration_ms": 2104,
+      "claim_id": "claim_1d26518f0f4db263",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0001",
+      "req_id": "req-patch-test-001-1",
+      "duration_ms": 1856,
+      "claim_id": "claim_c151987e5c7acb1c",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0002",
+      "req_id": "req-patch-test-001-2",
+      "duration_ms": 1850,
+      "claim_id": "claim_2990f3253c46cdee",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0003",
+      "req_id": "req-patch-test-001-3",
+      "duration_ms": 1836,
+      "claim_id": "claim_bfa5e4bcb6b3671f",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0004",
+      "req_id": "req-patch-test-001-4",
+      "duration_ms": 1852,
+      "claim_id": "claim_0604389625154026",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0005",
+      "req_id": "req-patch-test-001-5",
+      "duration_ms": 1854,
+      "claim_id": "claim_01a64f95a308601e",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0006",
+      "req_id": "req-patch-test-001-6",
+      "duration_ms": 1858,
+      "claim_id": "claim_58ec9588369f9974",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0007",
+      "req_id": "req-patch-test-001-7",
+      "duration_ms": 1856,
+      "claim_id": "claim_33d4469bac4d0a18",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0008",
+      "req_id": "req-patch-test-001-8",
+      "duration_ms": 1860,
+      "claim_id": "claim_3fa4ffd9c8755b81",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0009",
+      "req_id": "req-patch-test-001-9",
+      "duration_ms": 1852,
+      "claim_id": "claim_1746964ecf5395aa",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0010",
+      "req_id": "req-patch-test-001-10",
+      "duration_ms": 1856,
+      "claim_id": "claim_f8fb47687d80d025",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0011",
+      "req_id": "req-patch-test-001-11",
+      "duration_ms": 1861,
+      "claim_id": "claim_02d97f9374a9c75a",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0012",
+      "req_id": "req-patch-test-001-12",
+      "duration_ms": 1855,
+      "claim_id": "claim_d0af422b98c607be",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0013",
+      "req_id": "req-patch-test-001-13",
+      "duration_ms": 1832,
+      "claim_id": "claim_e6af54693c22c06e",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0014",
+      "req_id": "req-patch-test-001-14",
+      "duration_ms": 1856,
+      "claim_id": "claim_6354f74ae5ae9d50",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0015",
+      "req_id": "req-patch-test-001-15",
+      "duration_ms": 1858,
+      "claim_id": "claim_e3322f509f4cb720",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0016",
+      "req_id": "req-patch-test-001-16",
+      "duration_ms": 1854,
+      "claim_id": "claim_ed79809d07fa97f8",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0017",
+      "req_id": "req-patch-test-001-17",
+      "duration_ms": 1855,
+      "claim_id": "claim_53842f7b124a7204",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0018",
+      "req_id": "req-patch-test-001-18",
+      "duration_ms": 1860,
+      "claim_id": "claim_e98bf4d8243fcef3",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0019",
+      "req_id": "req-patch-test-001-19",
+      "duration_ms": 1828,
+      "claim_id": "claim_94a353401cb89fac",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0020",
+      "req_id": "req-patch-test-001-20",
+      "duration_ms": 1849,
+      "claim_id": "claim_7be1eff5f67b774d",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0021",
+      "req_id": "req-patch-test-001-21",
+      "duration_ms": 1863,
+      "claim_id": "claim_16767bd792767e78",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0022",
+      "req_id": "req-patch-test-001-22",
+      "duration_ms": 1854,
+      "claim_id": "claim_6047c222556fd91c",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0023",
+      "req_id": "req-patch-test-001-23",
+      "duration_ms": 1854,
+      "claim_id": "claim_01ebf162283cf98d",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0024",
+      "req_id": "req-patch-test-001-24",
+      "duration_ms": 1860,
+      "claim_id": "claim_46e0284ca9841cc8",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0025",
+      "req_id": "req-patch-test-001-25",
+      "duration_ms": 1859,
+      "claim_id": "claim_f79a97934ba8de5a",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0026",
+      "req_id": "req-patch-test-001-26",
+      "duration_ms": 1832,
+      "claim_id": "claim_65a54fedbe99c39d",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0027",
+      "req_id": "req-patch-test-001-27",
+      "duration_ms": 1855,
+      "claim_id": "claim_15194e59fb5b3cb2",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0028",
+      "req_id": "req-patch-test-001-28",
+      "duration_ms": 1857,
+      "claim_id": "claim_24189c287244c9eb",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0029",
+      "req_id": "req-patch-test-001-29",
+      "duration_ms": 1857,
+      "claim_id": "claim_bbea81d61fc9a057",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0030",
+      "req_id": "req-patch-test-001-30",
+      "duration_ms": 1857,
+      "claim_id": "claim_ae5bb60a0364be6d",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0031",
+      "req_id": "req-patch-test-001-31",
+      "duration_ms": 1853,
+      "claim_id": "claim_7edf64df1d9511fa",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0032",
+      "req_id": "req-patch-test-001-32",
+      "duration_ms": 1856,
+      "claim_id": "claim_ebe7dc8049ee0c95",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0033",
+      "req_id": "req-patch-test-001-33",
+      "duration_ms": 1859,
+      "claim_id": "claim_77287dea7510e0db",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0034",
+      "req_id": "req-patch-test-001-34",
+      "duration_ms": 1852,
+      "claim_id": "claim_0dc261eecc75e713",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0035",
+      "req_id": "req-patch-test-001-35",
+      "duration_ms": 1857,
+      "claim_id": "claim_61ebb7ac8990f70a",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0036",
+      "req_id": "req-patch-test-001-36",
+      "duration_ms": 1846,
+      "claim_id": "claim_e51b6be6d7a4a6ac",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0037",
+      "req_id": "req-patch-test-001-37",
+      "duration_ms": 1859,
+      "claim_id": "claim_e140c1b8ea74616f",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0038",
+      "req_id": "req-patch-test-001-38",
+      "duration_ms": 1853,
+      "claim_id": "claim_ac8994fdc33064ba",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0039",
+      "req_id": "req-patch-test-001-39",
+      "duration_ms": 1830,
+      "claim_id": "claim_ff3e1366c44b085c",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0040",
+      "req_id": "req-patch-test-001-40",
+      "duration_ms": 1844,
+      "claim_id": "claim_e336e014b6597669",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0041",
+      "req_id": "req-patch-test-001-41",
+      "duration_ms": 1855,
+      "claim_id": "claim_1363a8880ff5dcc0",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0042",
+      "req_id": "req-patch-test-001-42",
+      "duration_ms": 1852,
+      "claim_id": "claim_a8ed108fcdd363a7",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0043",
+      "req_id": "req-patch-test-001-43",
+      "duration_ms": 1855,
+      "claim_id": "claim_74c5a273258f9098",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0044",
+      "req_id": "req-patch-test-001-44",
+      "duration_ms": 1856,
+      "claim_id": "claim_3854fc36366a4e6f",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0045",
+      "req_id": "req-patch-test-001-45",
+      "duration_ms": 1859,
+      "claim_id": "claim_b642254048719b42",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0046",
+      "req_id": "req-patch-test-001-46",
+      "duration_ms": 1855,
+      "claim_id": "claim_bfd7402b57894e59",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0047",
+      "req_id": "req-patch-test-001-47",
+      "duration_ms": 1859,
+      "claim_id": "claim_661198bb5c98c906",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0048",
+      "req_id": "req-patch-test-001-48",
+      "duration_ms": 1858,
+      "claim_id": "claim_e5794ddb407747ec",
+      "state": "PROPOSED",
+      "status": "ok"
+    },
+    {
+      "asset_id": "bench-1771360169523-0049",
+      "req_id": "req-patch-test-001-49",
+      "duration_ms": 1858,
+      "claim_id": "claim_c65fbd56d46e90c3",
+      "state": "PROPOSED",
+      "status": "ok"
+    }
+  ]
+}

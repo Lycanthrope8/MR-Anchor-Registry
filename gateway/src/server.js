@@ -1,7 +1,8 @@
 /**
  * ==============================================================================
  * server.js - MR Anchor Registry Gateway Server
- * Supports both Org1 and Org2 identities with role-based access
+ * PHASE 1: Added experiment-grade JSONL logging middleware
+ * Bug fix: req.orgId now properly set
  * ==============================================================================
  */
 
@@ -15,6 +16,7 @@ const claimsRoutes = require('./routes/claims');
 const adminRoutes = require('./routes/admin');
 const eventsRoutes = require('./routes/events');
 const logger = require('./services/logger');
+const { experimentLogMiddleware } = require('./services/experimentLogger');
 
 const app = express();
 
@@ -26,7 +28,8 @@ const ORG = process.env.ORG || 'org1'; // Default to org1
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-org-id']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-org-id',
+                     'x-run-id', 'x-req-id', 'x-lane']
 }));
 app.use(express.json());
 
@@ -63,17 +66,21 @@ async function initializeFabricClients() {
     }
 }
 
-// Make Fabric clients available to routes
+// Make Fabric clients available to routes + FIX orgId bug
 app.use((req, res, next) => {
     req.fabricClients = fabricClients;
     
     // Determine which org's identity to use based on header or default
     const requestedOrg = req.headers['x-org-id'] || ORG;
     req.currentOrg = requestedOrg;
+    req.orgId = requestedOrg;  // FIX: routes read req.orgId
     req.fabricClient = fabricClients[requestedOrg] || fabricClients.org1;
     
     next();
 });
+
+// PHASE 1: Experiment logging middleware - instrument benchmarked endpoints
+app.use(experimentLogMiddleware);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -141,6 +148,7 @@ async function startServer() {
         logger.info(`============================================`);
         logger.info(`Server running on port ${PORT}`);
         logger.info(`Default organization: ${ORG}`);
+        logger.info(`Experiment logging: ENABLED`);
         logger.info(`Org1 Admin Panel: http://localhost:${PORT}/admin-panel/org1`);
         logger.info(`Org2 Admin Panel: http://localhost:${PORT}/admin-panel/org2`);
         logger.info(`============================================`);
