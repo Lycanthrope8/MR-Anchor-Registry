@@ -15,6 +15,7 @@ const FabricClient = require('./services/fabricClient');
 const claimsRoutes = require('./routes/claims');
 const adminRoutes = require('./routes/admin');
 const eventsRoutes = require('./routes/events');
+const benchmarkRoutes = require('./routes/benchmark');
 const logger = require('./services/logger');
 const { experimentLogMiddleware } = require('./services/experimentLogger');
 
@@ -97,6 +98,7 @@ app.get('/health', (req, res) => {
 // API Routes
 app.use('/claims', claimsRoutes);
 app.use('/admin', adminRoutes);
+app.use('/admin', benchmarkRoutes);
 app.use('/events', eventsRoutes);
 
 // Static files for admin panels
