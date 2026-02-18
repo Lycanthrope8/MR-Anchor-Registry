@@ -1,2 +1,0 @@
-{"run_id":"patch-test-001","timestamp":"2026-02-17T21:21:33.485Z","timestamp_ms":1771363293485,"action":"bot_started","mode":"two-step","org":"both","delay_org1_ms":0,"delay_org2_ms":0,"gateway":"http://localhost:3000"}
-{"run_id":"patch-test-001","timestamp":"2026-02-17T21:21:33.486Z","timestamp_ms":1771363293486,"action":"sse_connected","status":"ok"}

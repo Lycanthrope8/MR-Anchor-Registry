@@ -15,4 +15,4 @@ yarn-error.log*
 .gateway.log
 .gateway.pid
 crypto-config/
-experiments/
+experiments/runs/
