@@ -26,7 +26,7 @@ cd "$SCRIPT_DIR"
 # ==============================================================================
 echo -e "${YELLOW}[1/5] Stopping Gateway Server...${NC}"
 
-# Find and kill any node process running the gateway
+# Find and kill any node process running the gateway on port 3000
 GATEWAY_PID=$(lsof -ti:3000 2>/dev/null || true)
 if [ -n "$GATEWAY_PID" ]; then
     echo "  Killing gateway process on port 3000 (PID: $GATEWAY_PID)"
@@ -34,6 +34,16 @@ if [ -n "$GATEWAY_PID" ]; then
     echo -e "${GREEN}  ✓ Gateway stopped${NC}"
 else
     echo "  Gateway not running on port 3000"
+fi
+
+# Find and kill any node process running the gateway on port 3001
+GATEWAY_PID=$(lsof -ti:3001 2>/dev/null || true)
+if [ -n "$GATEWAY_PID" ]; then
+    echo "  Killing gateway process on port 3001 (PID: $GATEWAY_PID)"
+    kill -9 $GATEWAY_PID 2>/dev/null || true
+    echo -e "${GREEN}  ✓ Gateway stopped${NC}"
+else
+    echo "  Gateway not running on port 3001"
 fi
 
 # ==============================================================================
