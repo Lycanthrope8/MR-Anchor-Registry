@@ -16,20 +16,14 @@ A complete Hyperledger Fabric blockchain solution for managing Mixed Reality anc
 │  └──────┬───────┘                              └──────┬───────┘         │
 │         │                                             │                  │
 │         ▼                                             ▼                  │
-│  ┌──────────────────────────────────────────────────────────────┐       │
-│  │                    Gateway Server (Node.js)                   │       │
-│  │  ┌────────────┐                      ┌────────────┐          │       │
-│  │  │ Org1 Admin │                      │ Org2 Admin │          │       │
-│  │  │   Panel    │                      │   Panel    │          │       │
-│  │  └────────────┘                      └────────────┘          │       │
-│  │                                                               │       │
-│  │  ┌────────────┐                      ┌────────────┐          │       │
-│  │  │   Org1     │                      │   Org2     │          │       │
-│  │  │  Identity  │                      │  Identity  │          │       │
-│  │  └────────────┘                      └────────────┘          │       │
-│  └──────────────────────────┬───────────────────────────────────┘       │
-│                             │                                            │
-│                             ▼                                            │
+│  ┌──────────────────┐                     ┌──────────────────┐          │
+│  │  Gateway (Org1)  │                     │  Gateway (Org2)  │          │
+│  │  Port 3000       │                     │  Port 3001       │          │
+│  │  Holds ONLY Org1 │                     │  Holds ONLY Org2 │          │
+│  │  private key     │                     │  private key     │          │
+│  └────────┬─────────┘                     └────────┬─────────┘          │
+│           │                                        │                     │
+│           ▼                                        ▼                     │
 │  ┌──────────────────────────────────────────────────────────────┐       │
 │  │              Hyperledger Fabric Network                       │       │
 │  │                                                               │       │
@@ -40,10 +34,18 @@ A complete Hyperledger Fabric blockchain solution for managing Mixed Reality anc
 │  │                                                               │       │
 │  │  ┌──────────────────────────────────────────────────┐        │       │
 │  │  │           anchor-registry Chaincode              │        │       │
-│  │  │  Endorsement Policy: AND(Org1MSP, Org2MSP)      │        │       │
+│  │  │  Fabric Tx Endorsement: OR(Org1MSP, Org2MSP)    │        │       │
+│  │  │  Governance Approval:   Both orgs must endorse   │        │       │
 │  │  └──────────────────────────────────────────────────┘        │       │
 │  └──────────────────────────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────────────┘
+
+Identity isolation: Each gateway process holds exactly one org's private key.
+No client input (header, query parameter, or body field) can cause a gateway
+to submit transactions as a different organization.
+
+SSE is ledger-driven: each gateway subscribes to Fabric chaincode events,
+so clients connected to EITHER gateway see the same global event stream.
 ```
 
 ## Claim Lifecycle
@@ -131,6 +133,7 @@ MR-Anchor-Registry/
 3. **Hyperledger Fabric binaries** (from fabric-samples)
 
 Ensure `fabric-samples` is at the same level as this project:
+
 ```
 parent-directory/
 ├── fabric-samples/
@@ -189,30 +192,30 @@ npm start
 
 ### Claims (Unity Client)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/claims/propose` | Propose new anchor |
-| POST | `/claims/endorse` | Endorse pending claim |
-| POST | `/claims/reject` | Reject pending claim |
-| GET | `/claims/:assetId` | Get claim details |
+| Method | Endpoint             | Description           |
+| ------ | -------------------- | --------------------- |
+| POST   | `/claims/propose`  | Propose new anchor    |
+| POST   | `/claims/endorse`  | Endorse pending claim |
+| POST   | `/claims/reject`   | Reject pending claim  |
+| GET    | `/claims/:assetId` | Get claim details     |
 
 ### Admin (Revocation Workflow)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/admin/revoke` | Initiate revocation |
-| POST | `/admin/endorse-revoke` | Endorse revocation |
-| POST | `/admin/reject-revoke` | Reject revocation |
-| GET | `/admin/pending-revocations` | List all pending |
-| GET | `/admin/pending-revocations/for-me` | List requiring my action |
-| GET | `/admin/anchors` | List active anchors |
+| Method | Endpoint                              | Description              |
+| ------ | ------------------------------------- | ------------------------ |
+| POST   | `/admin/revoke`                     | Initiate revocation      |
+| POST   | `/admin/endorse-revoke`             | Endorse revocation       |
+| POST   | `/admin/reject-revoke`              | Reject revocation        |
+| GET    | `/admin/pending-revocations`        | List all pending         |
+| GET    | `/admin/pending-revocations/for-me` | List requiring my action |
+| GET    | `/admin/anchors`                    | List active anchors      |
 
 ### Events (SSE)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/events/stream` | SSE event stream |
-| GET | `/events/snapshot` | Current state snapshot |
+| Method | Endpoint             | Description            |
+| ------ | -------------------- | ---------------------- |
+| GET    | `/events/stream`   | SSE event stream       |
+| GET    | `/events/snapshot` | Current state snapshot |
 
 ## Revocation Workflow
 
@@ -231,6 +234,7 @@ Body: { "asset_id": "asset_123", "reason": "Quality degraded" }
 ### 2. State Changes to REVOKE_PENDING
 
 The chaincode sets:
+
 - `state` → `REVOKE_PENDING`
 - `revokeInitiatedBy` → `Org1MSP`
 - `requiredEndorser` → `Org2MSP`
@@ -238,17 +242,21 @@ The chaincode sets:
 ### 3. Org2 Must Respond
 
 **Option A: Endorse (Complete Revocation)**
+
 ```javascript
 // From Unity (Org2)
 GatewaySync.Instance.EndorseRevoke("asset_123");
 ```
+
 Result: Anchor is **REVOKED** and **deleted** from active registry.
 
 **Option B: Reject (Keep Active)**
+
 ```javascript
 // From Unity (Org2)
 GatewaySync.Instance.RejectRevoke("asset_123", "Anchor still needed");
 ```
+
 Result: Anchor returns to **ACTIVE** state.
 
 ## Unity Integration
@@ -310,16 +318,49 @@ void OnRevokeCompleted(string assetId)
 }
 ```
 
-## Endorsement Policy
+## Endorsement and Governance
 
-The chaincode uses **AND** endorsement policy:
+This system has TWO distinct endorsement layers. Conflating them is a common
+source of confusion; here is the precise distinction:
+
+### 1. Fabric Transaction Endorsement Policy (OR)
+
+The chaincode lifecycle endorsement policy is:
+
 ```
-AND('Org1MSP.peer', 'Org2MSP.peer')
+OR('Org1MSP.peer', 'Org2MSP.peer')
 ```
 
-This means:
-- **Proposals** require both orgs to endorse (Org1 proposes → Org2 endorses)
-- **Revocations** require both orgs to agree (One initiates → Other endorses)
+This means a **single peer** from **either** org can endorse (execute + sign)
+a transaction proposal before it is submitted to the orderer and committed.
+This is set in `scripts/chaincode.sh` and is a Fabric infrastructure concern.
+
+### 2. Application-Level Governance Rule (dual-org approval)
+
+The chaincode **state machine** enforces that a claim only transitions to
+ACTIVE when **both** organizations have called `EndorseClaim`:
+
+```
+PROPOSED  ──Org1 endorses──▶  ENDORSED_ORG1  ──Org2 endorses──▶  ACTIVE
+PROPOSED  ──Org2 endorses──▶  ENDORSED_ORG2  ──Org1 endorses──▶  ACTIVE
+```
+
+Revocations work analogously: one org initiates, the other must endorse.
+
+**Why not use Fabric AND endorsement?**
+Using `AND('Org1MSP.peer','Org2MSP.peer')` at the Fabric level would require
+*both* peers to execute and sign every transaction (including read-heavy
+queries routed through `evaluateTransaction`).  Since the chaincode already
+enforces dual-org approval at the application level, the Fabric OR policy is
+sufficient: it ensures every transaction is properly signed by one org, while
+the chaincode logic ensures both orgs participate in the governance lifecycle.
+
+### 3. Identity Isolation (two gateway processes)
+
+Each organization operates its own gateway process.  The Org1 gateway
+(port 3000) holds only Org1's private key; the Org2 gateway (port 3001)
+holds only Org2's.  No runtime configuration or client input can cause one
+gateway to submit transactions as another organization.
 
 ## Security Notes
 
@@ -331,18 +372,21 @@ This means:
 ## Troubleshooting
 
 ### Chaincode Issues
+
 ```bash
 docker logs peer0.org1.anchor-registry.com
 docker logs peer0.org2.anchor-registry.com
 ```
 
 ### Network Issues
+
 ```bash
 docker ps -a
 docker-compose -f network/docker/docker-compose.yaml logs
 ```
 
 ### Reset Everything
+
 ```bash
 cd network/docker
 docker-compose down -v

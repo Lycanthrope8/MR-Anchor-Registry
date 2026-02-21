@@ -5,9 +5,9 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
-    "start:org1": "ORG=org1 node src/server.js",
+    "start:org1": "ORG=org1 PORT=3000 node src/server.js",
     "start:org2": "ORG=org2 PORT=3001 node src/server.js",
+    "dev": "nodemon src/server.js",
     "test": "jest"
   },
   "dependencies": {

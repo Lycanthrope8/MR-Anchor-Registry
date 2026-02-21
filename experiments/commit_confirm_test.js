@@ -155,7 +155,7 @@ async function main() {
                     req_id: reqId
                 },
                 {
-                    'x-org-id': 'org1',
+                    
                     'x-run-id': config.runId,
                     'x-req-id': reqId,
                     'x-lane': config.lane
@@ -284,7 +284,7 @@ async function main() {
     while (Date.now() - startWait < config.verifyTimeoutMs) {
         try {
             const anchors = await httpRequest('GET', `${config.gateway}/admin/anchors`, null, {
-                'x-org-id': 'org1',
+                
                 'x-run-id': config.runId,
                 'x-lane': config.lane
             });
@@ -313,7 +313,7 @@ async function main() {
     let snapshotActiveCount = 0;
     try {
         const snapshot = await httpRequest('GET', `${config.gateway}/events/snapshot`, null, {
-            'x-org-id': 'org1',
+            
             'x-run-id': config.runId,
             'x-lane': config.lane
         });

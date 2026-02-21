@@ -82,7 +82,7 @@ function experimentLogMiddleware(req, res, next) {
     const runId = req.body?.run_id || req.query?.run_id || req.headers['x-run-id'] || 'adhoc';
     const reqId = req.body?.req_id || req.query?.req_id || req.headers['x-req-id'] || null;
     const lane = req.body?.lane || req.query?.lane || req.headers['x-lane'] || 'unknown';
-    const org = req.headers['x-org-id'] || req.orgId || 'org1';
+    const org = req.orgId || 'org1';  // Server-side fixed identity
 
     // Determine asset_id
     let assetId = null;

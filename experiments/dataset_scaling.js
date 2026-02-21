@@ -176,6 +176,7 @@ function httpRequest(method, urlStr, body, headers, timeoutMs) {
 
 class ActivationTracker {
     constructor(gatewayUrl) {
+        this.gatewayUrl = gatewayUrl;
         this.url = `${gatewayUrl}/events/stream`;
         this.activated = new Set();
         this.connected = false;
@@ -201,8 +202,14 @@ class ActivationTracker {
                         if (msg.trim()) this._parse(msg);
                     }
                 });
-                res.on('end', () => { this.connected = false; });
-                res.on('error', () => { this.connected = false; });
+                res.on('end', () => {
+                    this.connected = false;
+                    logWarn('SSE connection closed by server');
+                });
+                res.on('error', (err) => {
+                    this.connected = false;
+                    logWarn(`SSE stream error: ${err.message}`);
+                });
                 resolve(true);
             });
             this.req.on('error', () => resolve(false));
@@ -225,6 +232,28 @@ class ActivationTracker {
 
     isActivated(assetId) { return this.activated.has(assetId); }
     activatedCount() { return this.activated.size; }
+
+    /**
+     * FIX #4: Polling fallback — query GET /admin/anchors to count active anchors.
+     * Used as a safety net if SSE misses events or disconnects.
+     * Returns the count of active anchors on the ledger.
+     */
+    async pollActiveCount(timeout) {
+        try {
+            const result = await httpRequest(
+                'GET',
+                `${this.gatewayUrl}/admin/anchors`,
+                null, {}, timeout || 10000
+            );
+            if (result.status === 200 && result.body) {
+                const count = result.body.count || (result.body.anchors ? result.body.anchors.length : 0);
+                return count;
+            }
+        } catch (err) {
+            logWarn(`Polling fallback failed: ${err.message}`);
+        }
+        return null;
+    }
 
     disconnect() {
         if (this.req) { this.req.destroy(); this.connected = false; }
@@ -267,7 +296,7 @@ async function fillAnchors(config, startIdx, count, tracker, fillLog) {
                     run_id: config.runId,
                     req_id: reqId
                 },
-                { 'x-org-id': 'org1', 'x-run-id': config.runId },
+                { 'x-run-id': config.runId },
                 config.timeout
             );
 
@@ -325,7 +354,27 @@ async function fillAnchors(config, startIdx, count, tracker, fillLog) {
             await sleep(2000);
         }
 
-        const finalActivated = assetIds.filter(id => tracker.isActivated(id)).length;
+        let finalActivated = assetIds.filter(id => tracker.isActivated(id)).length;
+
+        // FIX #4: Polling fallback if SSE missed events or disconnected
+        if (finalActivated < assetIds.length) {
+            log(`  SSE reports ${finalActivated}/${assetIds.length} — trying polling fallback...`);
+            const polledCount = await tracker.pollActiveCount(config.timeout);
+            if (polledCount !== null) {
+                log(`  Polling reports ${polledCount} total active anchors on ledger`);
+                // If ledger has at least as many active anchors as we expect,
+                // trust the ledger over SSE (SSE may have missed events)
+                if (polledCount >= (startIdx + assetIds.length)) {
+                    log(`  Polling confirms all anchors ACTIVE (ledger count ${polledCount} >= expected ${startIdx + assetIds.length})`);
+                    finalActivated = assetIds.length;
+                } else {
+                    logWarn(`  Polling shows ${polledCount} active, expected ${startIdx + assetIds.length} — some anchors may not have been endorsed`);
+                }
+            } else {
+                logWarn(`  Polling fallback failed — relying on SSE count (${finalActivated})`);
+            }
+        }
+
         if (finalActivated < assetIds.length) {
             logWarn(`Only ${finalActivated}/${assetIds.length} activated within timeout`);
         } else {
@@ -357,7 +406,7 @@ async function benchmarkReads(config, tierN, readLog) {
                 'GET',
                 `${config.gateway}/events/snapshot`,
                 null,
-                { 'x-org-id': 'org1', 'x-run-id': config.runId },
+                { 'x-run-id': config.runId },
                 config.timeout
             );
             const latencyMs = Date.now() - startMs;
@@ -403,7 +452,7 @@ async function benchmarkReads(config, tierN, readLog) {
                 'GET',
                 `${config.gateway}/admin/anchors`,
                 null,
-                { 'x-org-id': 'org1', 'x-run-id': config.runId },
+                { 'x-run-id': config.runId },
                 config.timeout
             );
             const latencyMs = Date.now() - startMs;
@@ -443,7 +492,7 @@ async function benchmarkReads(config, tierN, readLog) {
     try {
         const snap = await httpRequest(
             'GET', `${config.gateway}/events/snapshot`, null,
-            { 'x-org-id': 'org1' }, config.timeout
+            {}, config.timeout
         );
         const assets = snap.body?.assets || [];
         if (assets.length > 0) {
@@ -460,7 +509,7 @@ async function benchmarkReads(config, tierN, readLog) {
                             'GET',
                             `${config.gateway}/claims/${sampleAsset}/history`,
                             null,
-                            { 'x-org-id': 'org1' },
+                            {},
                             config.timeout
                         );
                         const latencyMs = Date.now() - startMs;
@@ -507,7 +556,7 @@ async function countActiveAnchors(gateway, timeout) {
     try {
         const result = await httpRequest(
             'GET', `${gateway}/admin/anchors`, null,
-            { 'x-org-id': 'org1' }, timeout
+            {}, timeout
         );
         if (result.status >= 200 && result.status < 300 && result.body?.anchors) {
             return result.body.anchors.length;

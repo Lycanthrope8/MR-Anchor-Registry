@@ -56,6 +56,13 @@ if lsof -Pi :3000 -sTCP:LISTEN -t >/dev/null 2>&1; then
     sleep 2
 fi
 
+# Check if port 3001 is already in use (Org2 gateway)
+if lsof -Pi :3001 -sTCP:LISTEN -t >/dev/null 2>&1; then
+    echo -e "${YELLOW}Warning: Port 3001 is in use. Stopping existing process...${NC}"
+    kill -9 $(lsof -ti:3001) 2>/dev/null || true
+    sleep 2
+fi
+
 echo -e "${GREEN}  ✓ All requirements met${NC}"
 echo ""
 
@@ -182,7 +189,73 @@ echo -e "${YELLOW}Starting Gateway Server... (Press Ctrl+C to stop)${NC}"
 echo ""
 
 # ==============================================================================
-# 5. Start Gateway Server (foreground - keeps running)
+# 5. Start BOTH Gateway Servers (Org1 + Org2)
 # ==============================================================================
-cd "$SCRIPT_DIR/gateway"
-npm start
+echo -e "${YELLOW}Starting BOTH Gateway Servers (Org1:3000, Org2:3001)...${NC}"
+echo ""
+
+GATEWAY_DIR="$SCRIPT_DIR/gateway"
+
+# If running over SSH (no GUI), AppleScript will fail (-10810). Use tmux (preferred) or background.
+if [[ -n "$SSH_CONNECTION" || -n "$SSH_TTY" ]]; then
+    echo -e "${YELLOW}SSH session detected (no macOS GUI). Launching gateways via tmux...${NC}"
+
+    if command -v tmux >/dev/null 2>&1; then
+        # restart cleanly if session already exists
+        tmux has-session -t mr-gateways 2>/dev/null && tmux kill-session -t mr-gateways
+
+        tmux new-session -d -s mr-gateways "cd \"$GATEWAY_DIR\" && npm run start:org1"
+        tmux split-window -h "cd \"$GATEWAY_DIR\" && npm run start:org2"
+        tmux select-layout even-horizontal
+
+        echo -e "${GREEN}  ✓ Gateways started inside tmux session: mr-gateways${NC}"
+        echo -e "Attach with: ${YELLOW}tmux attach -t mr-gateways${NC}"
+        echo -e "Detach with: ${YELLOW}Ctrl+b then d${NC}"
+        exit 0
+    fi
+
+    # Fallback if tmux isn't installed
+    echo -e "${YELLOW}tmux not found. Starting both gateways in background (logs/)...${NC}"
+    mkdir -p "$SCRIPT_DIR/logs"
+
+    ( cd "$GATEWAY_DIR" && ORG=org1 PORT=3000 npm start ) > "$SCRIPT_DIR/logs/gateway_org1.log" 2>&1 &
+    ( cd "$GATEWAY_DIR" && ORG=org2 PORT=3001 npm start ) > "$SCRIPT_DIR/logs/gateway_org2.log" 2>&1 &
+
+    echo -e "${GREEN}  ✓ Org1 log: logs/gateway_org1.log${NC}"
+    echo -e "${GREEN}  ✓ Org2 log: logs/gateway_org2.log${NC}"
+    echo -e "Tail logs: ${YELLOW}tail -f logs/gateway_org1.log${NC}  |  ${YELLOW}tail -f logs/gateway_org2.log${NC}"
+    exit 0
+fi
+
+# macOS local GUI: open two Terminal windows/tabs automatically
+if [[ "$OSTYPE" == "darwin"* ]] && command -v osascript >/dev/null 2>&1; then
+    echo -e "${GREEN}  ✓ Detected macOS GUI session. Opening two Terminal windows for gateways...${NC}"
+
+    # Ensure Terminal is launched
+    open -a Terminal >/dev/null 2>&1 || true
+
+    osascript <<EOF
+tell application id "com.apple.Terminal"
+    activate
+    do script "cd \"$GATEWAY_DIR\" && npm run start:org1"
+    delay 0.3
+    do script "cd \"$GATEWAY_DIR\" && npm run start:org2"
+end tell
+EOF
+
+    echo ""
+    echo -e "${GREEN}Gateways launched:${NC}"
+    echo -e "  Org1 Gateway: ${GREEN}http://localhost:3000${NC}"
+    echo -e "  Org2 Gateway: ${GREEN}http://localhost:3001${NC}"
+    echo ""
+    echo -e "${YELLOW}up.sh completed. Stop gateways in their Terminal windows (Ctrl+C).${NC}"
+    exit 0
+fi
+
+# Last-resort fallback (non-macOS local)
+echo -e "${YELLOW}No macOS Terminal automation detected. Starting both gateways in background (logs/)...${NC}"
+mkdir -p "$SCRIPT_DIR/logs"
+( cd "$GATEWAY_DIR" && ORG=org1 PORT=3000 npm start ) > "$SCRIPT_DIR/logs/gateway_org1.log" 2>&1 &
+( cd "$GATEWAY_DIR" && ORG=org2 PORT=3001 npm start ) > "$SCRIPT_DIR/logs/gateway_org2.log" 2>&1 &
+echo -e "${GREEN}  ✓ Org1 log: logs/gateway_org1.log${NC}"
+echo -e "${GREEN}  ✓ Org2 log: logs/gateway_org2.log${NC}"

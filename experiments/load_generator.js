@@ -11,6 +11,10 @@
  * interval-based scheduling so requests are dispatched at a steady rate
  * regardless of response time, enabling true concurrent in-flight requests.
  *
+ * FIX #1: W2 lifecycle summary distinguishes propose-OK vs activation-OK.
+ * FIX #2: Inflight requests after drain timeout are counted as DRAIN_TIMEOUT.
+ * FIX #3: Docker stats collection uses child process (non-blocking).
+ *
  * USAGE:
  *   # W1 — Propose-only at 5 ops/sec for 60 seconds:
  *   node load_generator.js --gateway http://localhost:3000 \
@@ -19,13 +23,6 @@
  *   # W2 — Full lifecycle at 10 ops/sec (start endorser_bot first!):
  *   node load_generator.js --gateway http://localhost:3000 \
  *       --run_id exp1-w2-r10 --rate 10 --duration 60 --workload lifecycle
- *
- *   # Sweep multiple rates:
- *   for R in 1 5 10 20 50; do
- *     node load_generator.js --gateway http://localhost:3000 \
- *       --run_id "exp1-w1-r${R}" --rate $R --duration 60 --workload propose
- *     sleep 10   # cool-down between runs
- *   done
  *
  * OPTIONS:
  *   --gateway <url>       Gateway base URL (default: http://localhost:3000)
@@ -146,7 +143,7 @@ function stddev(arr) {
     return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - 1));
 }
 
-function stats(arr) {
+function computeStats(arr) {
     if (arr.length === 0) return null;
     const sorted = [...arr].sort((a, b) => a - b);
     return {
@@ -162,7 +159,7 @@ function stats(arr) {
 }
 
 // =============================================================================
-// HTTP CLIENT  (same pattern as commit_confirm_test.js)
+// HTTP CLIENT
 // =============================================================================
 
 function httpRequest(method, urlStr, body, headers, timeoutMs) {
@@ -198,7 +195,7 @@ function httpRequest(method, urlStr, body, headers, timeoutMs) {
 }
 
 // =============================================================================
-// ERROR NORMALIZATION  (same as commit_confirm_test.js)
+// ERROR NORMALIZATION
 // =============================================================================
 
 function normalizeError(errStr) {
@@ -253,8 +250,14 @@ class SseTracker {
                     }
                 });
 
-                res.on('end', () => { this.connected = false; });
-                res.on('error', () => { this.connected = false; });
+                res.on('end', () => {
+                    this.connected = false;
+                    logWarn('SSE connection closed by server');
+                });
+                res.on('error', (err) => {
+                    this.connected = false;
+                    logWarn(`SSE stream error: ${err.message}`);
+                });
                 resolve(true);
             });
 
@@ -309,69 +312,62 @@ class SseTracker {
 }
 
 // =============================================================================
-// DOCKER STATS COLLECTOR  (optional)
+// DOCKER STATS COLLECTOR — FIX #3: non-blocking child process
 // =============================================================================
 
 class DockerStatsCollector {
     constructor(outPath) {
         this.outPath = outPath;
         this.proc = null;
+        this.stream = null;
     }
 
     start() {
         try {
-            // Check if docker is available
-            execSync('docker ps', { stdio: 'ignore' });
+            // Verify docker is available (one-time sync check before load starts)
+            execSync('docker ps', { stdio: 'ignore', timeout: 3000 });
         } catch {
             logWarn('Docker not available — skipping docker stats collection');
             return false;
         }
 
-        const stream = fs.createWriteStream(this.outPath, { flags: 'a' });
-        this.proc = spawn('bash', ['-c',
-            `while true; do
-                docker stats --no-stream --format '{"timestamp_ms":{{json .}},"ts":'$(date +%s%3N)'}' 2>/dev/null | while IFS= read -r line; do
-                    echo "$line"
+        this.stream = fs.createWriteStream(this.outPath, { flags: 'w' });
+
+        // Spawn a detached bash loop that polls docker stats every 2s.
+        // It writes JSONL to stdout which we pipe to the file.
+        // This runs in a separate process and NEVER blocks the Node.js event loop.
+        this.proc = spawn('bash', ['-c', `
+            while true; do
+                TS=$(date +%s%3N)
+                docker stats --no-stream --format '{{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}\\t{{.NetIO}}\\t{{.BlockIO}}' 2>/dev/null | while IFS=$'\\t' read -r name cpu mem net block; do
+                    printf '{"timestamp_ms":%s,"container":"%s","cpu_pct":"%s","mem_usage":"%s","net_io":"%s","block_io":"%s"}\\n' "$TS" "$name" "$cpu" "$mem" "$net" "$block"
                 done
                 sleep 2
-            done`
-        ], { stdio: ['ignore', 'pipe', 'ignore'] });
+            done
+        `], {
+            stdio: ['ignore', 'pipe', 'ignore'],
+            detached: false
+        });
 
-        // docker stats --format outputs one object per container but the JSON
-        // template above isn't quite right. Let's use a simpler approach:
-        this.proc.kill();  // kill the bad one
+        this.proc.stdout.pipe(this.stream);
 
-        // Better approach: poll docker stats every 2s
-        this.interval = setInterval(() => {
-            try {
-                const raw = execSync(
-                    `docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"`,
-                    { timeout: 5000, encoding: 'utf8' }
-                );
-                const nowMs = Date.now();
-                for (const line of raw.trim().split('\n')) {
-                    if (!line.trim()) continue;
-                    const [name, cpu, mem, net, block] = line.split('\t');
-                    stream.write(JSON.stringify({
-                        timestamp_ms: nowMs,
-                        container: name,
-                        cpu_pct: cpu,
-                        mem_usage: mem,
-                        net_io: net,
-                        block_io: block
-                    }) + '\n');
-                }
-            } catch { /* ignore individual poll failures */ }
-        }, 2000);
+        this.proc.on('error', (err) => {
+            logWarn(`Docker stats child process error: ${err.message}`);
+        });
 
-        this.stream = stream;
-        log('Docker stats collection started (every 2s)');
+        log('Docker stats collection started (child process, every 2s)');
         return true;
     }
 
     stop() {
-        if (this.interval) clearInterval(this.interval);
-        if (this.stream) this.stream.end();
+        if (this.proc) {
+            this.proc.kill('SIGTERM');
+            this.proc = null;
+        }
+        if (this.stream) {
+            this.stream.end();
+            this.stream = null;
+        }
         log('Docker stats collection stopped');
     }
 }
@@ -397,7 +393,7 @@ async function runLoadTest(config) {
         logWarn('SSE tracker failed to connect — activation tracking unavailable');
     }
 
-    // Docker stats (optional)
+    // Docker stats (optional) — FIX #3: non-blocking
     let dockerCollector = null;
     if (config.dockerStats) {
         dockerCollector = new DockerStatsCollector(path.join(outDir, 'docker_stats.jsonl'));
@@ -417,7 +413,7 @@ async function runLoadTest(config) {
 
     const allResults = [];   // collect {assetId, sendMs, rttMs, status, error, ...}
     let inflight = 0;
-    let maxInflight = 0;
+    let peakInflight = 0;
     let seq = 0;
 
     const runStartMs = Date.now();
@@ -431,7 +427,7 @@ async function runLoadTest(config) {
         const isWarmup = i < warmupRequests;
 
         inflight++;
-        if (inflight > maxInflight) maxInflight = inflight;
+        if (inflight > peakInflight) peakInflight = inflight;
 
         const record = {
             seq: i,
@@ -466,7 +462,6 @@ async function runLoadTest(config) {
                 req_id: reqId
             },
             {
-                'x-org-id': 'org1',
                 'x-run-id': config.runId,
                 'x-req-id': reqId,
                 'x-lane': config.lane
@@ -500,11 +495,15 @@ async function runLoadTest(config) {
                 log(`  #${record.seq} ${record.asset_id} → ${record.status} ${record.rtt_ms}ms${tag}`);
             }
         });
+
+        // Store record reference so we can mark DRAIN_TIMEOUT later
+        return record;
     }
 
     // Schedule dispatches at precise intervals
     return new Promise((resolve) => {
         let dispatched = 0;
+        const dispatchedRecords = [];  // keep refs for drain timeout marking
 
         // Use setInterval for steady rate, with drift correction
         const startTime = Date.now();
@@ -521,7 +520,8 @@ async function runLoadTest(config) {
             const shouldHaveSent = Math.min(Math.floor(elapsed / intervalMs) + 1, totalRequests);
 
             while (dispatched < shouldHaveSent && dispatched < totalRequests) {
-                dispatch();
+                const rec = dispatch();
+                dispatchedRecords.push(rec);
                 dispatched++;
             }
 
@@ -531,7 +531,7 @@ async function runLoadTest(config) {
                 const fail = allResults.filter(r => r.status !== 'ok' && r.status !== null).length;
                 const pending = dispatched - allResults.length;
                 log(`  Progress: ${dispatched}/${totalRequests} dispatched, ` +
-                    `${ok} ok, ${fail} fail, ${pending} in-flight, peak=${maxInflight}`);
+                    `${ok} ok, ${fail} fail, ${pending} in-flight, peak=${peakInflight}`);
             }
         }, Math.max(1, Math.floor(intervalMs / 2)));   // poll at 2× rate for accuracy
 
@@ -539,19 +539,34 @@ async function runLoadTest(config) {
             const sendDuration = Date.now() - runStartMs;
             log(`All ${totalRequests} requests dispatched in ${(sendDuration / 1000).toFixed(1)}s`);
 
-            // Wait for in-flight requests to complete (up to timeout)
+            // =================================================================
+            // FIX #2: Drain with explicit DRAIN_TIMEOUT marking
+            // =================================================================
             log(`Waiting for ${inflight} in-flight requests...`);
             const drainStart = Date.now();
-            while (inflight > 0 && (Date.now() - drainStart) < config.timeout + 5000) {
+            const drainLimitMs = config.timeout + 5000;
+            while (inflight > 0 && (Date.now() - drainStart) < drainLimitMs) {
                 await sleep(100);
             }
             if (inflight > 0) {
-                logWarn(`${inflight} requests still in-flight after drain timeout`);
+                const timedOutCount = inflight;
+                logWarn(`${timedOutCount} requests still in-flight after drain timeout — marking as DRAIN_TIMEOUT`);
+                // Mark all still-pending records as DRAIN_TIMEOUT
+                for (const rec of dispatchedRecords) {
+                    if (rec.status === null) {
+                        rec.status = 'error';
+                        rec.error = 'DRAIN_TIMEOUT';
+                        rec.error_category = 'DRAIN_TIMEOUT';
+                        rec.rtt_ms = Date.now() - rec.send_ms;
+                        allResults.push(rec);
+                        reqLog.write(JSON.stringify(rec) + '\n');
+                    }
+                }
             }
 
-            // =====================================================================
+            // =================================================================
             // SSE DRAIN: wait for activations (lifecycle workload)
-            // =====================================================================
+            // =================================================================
             if (config.workload === 'lifecycle' && sseOk) {
                 const successAssets = allResults
                     .filter(r => r.status === 'ok')
@@ -577,15 +592,15 @@ async function runLoadTest(config) {
                 }
             }
 
-            // =====================================================================
+            // =================================================================
             // COMPUTE STATISTICS
-            // =====================================================================
+            // =================================================================
             sse.disconnect();
             if (dockerCollector) dockerCollector.stop();
             reqLog.end();
             sseLog.end();
 
-            const summary = computeSummary(config, allResults, sse, runStartMs, sendDuration);
+            const summary = computeSummary(config, allResults, sse, runStartMs, sendDuration, peakInflight);
             resolve(summary);
         }
     });
@@ -595,14 +610,14 @@ async function runLoadTest(config) {
 // STATISTICS COMPUTATION
 // =============================================================================
 
-function computeSummary(config, allResults, sse, runStartMs, sendDurationMs) {
+function computeSummary(config, allResults, sse, runStartMs, sendDurationMs, peakInflight) {
     // Separate warmup from measurement
     const warmup = allResults.filter(r => r.is_warmup);
     const measured = allResults.filter(r => !r.is_warmup);
 
     // ---- Propose RTT stats (measurement window only) ----
     const okMeasured = measured.filter(r => r.status === 'ok');
-    const failMeasured = measured.filter(r => r.status === 'fail' || r.status === 'error');
+    const failMeasured = measured.filter(r => r.status !== 'ok');
     const okRtts = okMeasured.map(r => r.rtt_ms).filter(v => v !== null);
 
     // ---- Error breakdown ----
@@ -613,7 +628,6 @@ function computeSummary(config, allResults, sse, runStartMs, sendDurationMs) {
     }
 
     // ---- Throughput ----
-    // Actual throughput = successful responses / measurement window duration
     const measureStart = measured.length > 0 ? Math.min(...measured.map(r => r.send_ms)) : runStartMs;
     const measureEnd = measured.length > 0 ? Math.max(...measured.map(r => r.send_ms + (r.rtt_ms || 0))) : runStartMs;
     const measureWindowSec = Math.max(0.001, (measureEnd - measureStart) / 1000);
@@ -631,7 +645,53 @@ function computeSummary(config, allResults, sse, runStartMs, sendDurationMs) {
         actualRate = meanInterval > 0 ? 1000 / meanInterval : 0;
     }
 
-    // ---- Commit-confirmed latency (lifecycle workload) ----
+    // ==================================================================
+    // FIX #1: Lifecycle activation tracking
+    // ==================================================================
+    let activationSection = null;
+    if (config.workload === 'lifecycle') {
+        // Activation latency: propose send_ms → CLAIM_ACTIVATED SSE timestamp
+        const activationLatencies = [];
+        let activatedCount = 0;
+        let notActivatedCount = 0;
+
+        for (const r of okMeasured) {
+            const activationMs = sse.getActivationTime(r.asset_id);
+            if (activationMs && r.send_ms) {
+                activationLatencies.push(activationMs - r.send_ms);
+                activatedCount++;
+            } else {
+                notActivatedCount++;
+            }
+        }
+
+        // Add NOT_ACTIVATED to error breakdown so it's visible alongside other failures
+        if (notActivatedCount > 0) {
+            errorCategories['NOT_ACTIVATED'] = notActivatedCount;
+        }
+
+        // Also count propose failures that never had a chance
+        const proposeFailCount = failMeasured.length;
+
+        activationSection = {
+            propose_ok_count: okMeasured.length,
+            activated_count: activatedCount,
+            not_activated_count: notActivatedCount,
+            propose_fail_count: proposeFailCount,
+            activation_success_rate_pct: okMeasured.length > 0
+                ? parseFloat(((activatedCount / okMeasured.length) * 100).toFixed(1))
+                : 0,
+            // End-to-end success: activated / total measured (includes propose failures)
+            end_to_end_success_rate_pct: measured.length > 0
+                ? parseFloat(((activatedCount / measured.length) * 100).toFixed(1))
+                : 0,
+            activation_latency: computeStats(activationLatencies),
+            // Activation throughput: activated anchors / measurement window
+            activation_throughput_ops: parseFloat((activatedCount / measureWindowSec).toFixed(3))
+        };
+    }
+
+    // ---- Backward-compat commit_confirm (same data, flatter) ----
     let commitConfirmStats = null;
     if (config.workload === 'lifecycle') {
         const ccLatencies = [];
@@ -642,7 +702,7 @@ function computeSummary(config, allResults, sse, runStartMs, sendDurationMs) {
             }
         }
         if (ccLatencies.length > 0) {
-            commitConfirmStats = stats(ccLatencies);
+            commitConfirmStats = computeStats(ccLatencies);
         }
     }
 
@@ -676,14 +736,17 @@ function computeSummary(config, allResults, sse, runStartMs, sendDurationMs) {
             actual_throughput_ops: parseFloat(actualThroughput.toFixed(3)),
             measurement_window_sec: parseFloat(measureWindowSec.toFixed(3))
         },
-        propose_rtt: stats(okRtts),
+        propose_rtt: computeStats(okRtts),
+        // FIX #1: lifecycle activation section (null for W1)
+        activation: activationSection,
+        // backward compat
         commit_confirm: commitConfirmStats,
         error_breakdown: errorCategories,
         concurrency: {
-            // Estimate: at target rate R and mean RTT T, concurrency ≈ R × T/1000
             estimated_mean: okRtts.length > 0
                 ? parseFloat((config.rate * mean(okRtts) / 1000).toFixed(2))
-                : null
+                : null,
+            peak_inflight: peakInflight || 0
         }
     };
 
@@ -716,7 +779,7 @@ async function main() {
     // Health check
     try {
         const h = await httpRequest('GET', `${config.gateway}/health`, null, {}, 5000);
-        log(`✓ Gateway healthy (org1=${h.body.org1Connected}, org2=${h.body.org2Connected})`);
+        log(`✓ Gateway healthy (org=${h.body.org}, msp=${h.body.mspId}, connected=${h.body.connected})`);
     } catch (e) {
         logError(`Gateway unreachable: ${e.message}`);
         process.exit(1);
@@ -741,9 +804,9 @@ async function main() {
     console.log(`  Dispatched:        ${summary.counts.total_dispatched}`);
     console.log(`    Warmup:          ${summary.counts.warmup_excluded}`);
     console.log(`    Measured:        ${summary.counts.measured}`);
-    console.log(`    OK:              ${summary.counts.measured_ok}`);
+    console.log(`    OK (propose):    ${summary.counts.measured_ok}`);
     console.log(`    Failed:          ${summary.counts.measured_fail}`);
-    console.log(`    Success rate:    ${summary.counts.success_rate_pct}%`);
+    console.log(`    Propose success: ${summary.counts.success_rate_pct}%`);
     console.log('');
 
     if (summary.propose_rtt) {
@@ -756,15 +819,26 @@ async function main() {
         console.log(`    Max:   ${summary.propose_rtt.max} ms`);
     }
 
-    if (summary.commit_confirm) {
+    // FIX #1: Print activation stats for lifecycle
+    if (summary.activation) {
+        const a = summary.activation;
         console.log('');
-        console.log('  Commit-Confirmed Latency (send → SSE ACTIVE):');
-        console.log(`    Min:   ${summary.commit_confirm.min} ms`);
-        console.log(`    P50:   ${summary.commit_confirm.p50} ms`);
-        console.log(`    Mean:  ${summary.commit_confirm.mean} ± ${summary.commit_confirm.std} ms`);
-        console.log(`    P95:   ${summary.commit_confirm.p95} ms`);
-        console.log(`    P99:   ${summary.commit_confirm.p99} ms`);
-        console.log(`    Max:   ${summary.commit_confirm.max} ms`);
+        console.log('  Lifecycle Activation (W2):');
+        console.log(`    Proposed OK:         ${a.propose_ok_count}`);
+        console.log(`    Activated (ACTIVE):  ${a.activated_count}`);
+        console.log(`    Not activated:       ${a.not_activated_count}`);
+        console.log(`    Propose failures:    ${a.propose_fail_count}`);
+        console.log(`    Activation rate:     ${a.activation_success_rate_pct}% (of proposed OK)`);
+        console.log(`    End-to-end rate:     ${a.end_to_end_success_rate_pct}% (of all measured)`);
+        console.log(`    Activation tput:     ${a.activation_throughput_ops} ops/sec`);
+        if (a.activation_latency) {
+            console.log('    Activation latency (propose → ACTIVE):');
+            console.log(`      Min:   ${a.activation_latency.min} ms`);
+            console.log(`      P50:   ${a.activation_latency.p50} ms`);
+            console.log(`      Mean:  ${a.activation_latency.mean} ± ${a.activation_latency.std} ms`);
+            console.log(`      P95:   ${a.activation_latency.p95} ms`);
+            console.log(`      Max:   ${a.activation_latency.max} ms`);
+        }
     }
 
     if (Object.keys(summary.error_breakdown).length > 0) {
@@ -779,6 +853,7 @@ async function main() {
     if (summary.concurrency.estimated_mean !== null) {
         console.log('');
         console.log(`  Est. mean concurrency: ${summary.concurrency.estimated_mean}`);
+        console.log(`  Peak in-flight:        ${summary.concurrency.peak_inflight}`);
     }
 
     console.log('═══════════════════════════════════════════════════════════════');
