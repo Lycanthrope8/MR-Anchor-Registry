@@ -16,4 +16,5 @@ yarn-error.log*
 .gateway.pid
 crypto-config/
 experiments/runs/
+experiments/runs_merged/
 gateway/experiments/runs/

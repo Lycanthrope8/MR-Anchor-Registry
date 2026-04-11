@@ -10,6 +10,10 @@
  * Experiment traceability: route handlers call registerCorrelation(assetId,
  * reqId) before submitting.  When the chaincode event arrives, the req_id is
  * attached to the SSE broadcast for commit-confirm latency measurement.
+ *
+ * v2.0: Added annotation event translation (ANNOTATION_PROPOSED, 
+ *       ANNOTATION_ENDORSED_ORG1/2, ANNOTATION_ACTIVE, ANNOTATION_REJECTED,
+ *       ANNOTATION_REVOKED).
  * ==============================================================================
  */
 
@@ -125,8 +129,14 @@ function chaincodeEventToSsePayload(eventName, payload) {
     // Common fields from chaincode payload
     if (payload.assetId)        { base.asset_id = payload.assetId;  base.assetId = payload.assetId; }
     if (payload.claimId)        { base.claim_id = payload.claimId;  base.claimId = payload.claimId; }
+    if (payload.annotationId)   { base.annotation_id = payload.annotationId;  base.annotationId = payload.annotationId; }
 
     switch (eventName) {
+
+        // =================================================================
+        // ANCHOR CLAIM EVENTS (existing)
+        // =================================================================
+
         case 'CLAIM_PROPOSED':
             base.proposed_via_org = payload.proposedViaOrg || '';
             base.proposedViaOrg = payload.proposedViaOrg || '';
@@ -185,6 +195,62 @@ function chaincodeEventToSsePayload(eventName, payload) {
             base.anchorPreserved = true;
             base.reason = payload.reason || '';
             base.state = 'ACTIVE';
+            break;
+
+        // =================================================================
+        // ANNOTATION EVENTS (v2.0)
+        // =================================================================
+
+        case 'ANNOTATION_PROPOSED':
+            base.tier = payload.tier || '';
+            base.content_text = payload.contentText || '';
+            base.contentText = payload.contentText || '';
+            base.proposed_via_org = payload.proposedViaOrg || '';
+            base.proposedViaOrg = payload.proposedViaOrg || '';
+            base.state = 'ANN_PROPOSED';
+            base.requires_endorsement_from = payload.requiredEndorsements || ['Org1MSP', 'Org2MSP'];
+            break;
+
+        case 'ANNOTATION_ENDORSED_ORG1':
+        case 'ANNOTATION_ENDORSED_ORG2':
+            base.endorsed_by = payload.endorsedBy || '';
+            base.endorsedBy = payload.endorsedBy || '';
+            base.endorsements = payload.endorsements || {};
+            base.state = payload.state || eventName.replace('ANNOTATION_', 'ANN_');
+            break;
+
+        case 'ANNOTATION_ACTIVE':
+            base.tier = payload.tier || '';
+            base.content_text = payload.contentText || '';
+            base.contentText = payload.contentText || '';
+            base.activation_method = payload.activationMethod || 'DUAL_ENDORSEMENT';
+            base.activationMethod = payload.activationMethod || 'DUAL_ENDORSEMENT';
+            base.anchor_claim_id = payload.anchorClaimId || '';
+            base.anchorClaimId = payload.anchorClaimId || '';
+            base.state = 'ANN_ACTIVE';
+            // Include endorsement info if available
+            if (payload.finalEndorser) {
+                base.final_endorser = payload.finalEndorser;
+                base.finalEndorser = payload.finalEndorser;
+            }
+            if (payload.endorsedBy) {
+                base.endorsed_by = payload.endorsedBy;
+                base.endorsedBy = payload.endorsedBy;
+            }
+            break;
+
+        case 'ANNOTATION_REJECTED':
+            base.rejected_by = payload.rejectedBy || '';
+            base.rejectedBy = payload.rejectedBy || '';
+            base.reason = payload.reason || '';
+            base.state = 'ANN_REJECTED';
+            break;
+
+        case 'ANNOTATION_REVOKED':
+            base.revoked_by = payload.revokedBy || '';
+            base.revokedBy = payload.revokedBy || '';
+            base.reason = payload.reason || '';
+            base.state = 'ANN_REVOKED';
             break;
 
         default:
@@ -266,7 +332,7 @@ router.get('/stream', (req, res) => {
 });
 
 /**
- * Get current snapshot
+ * Get current snapshot (now includes annotations)
  * GET /events/snapshot
  */
 router.get('/snapshot', async (req, res) => {

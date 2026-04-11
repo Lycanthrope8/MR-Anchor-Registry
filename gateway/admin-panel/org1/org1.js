@@ -2,6 +2,7 @@
  * ==============================================================================
  * Org1 Admin Panel - JavaScript
  * MR Anchor Registry - Dual Endorsement Workflow
+ * v2.0: Added annotation governance support
  * ==============================================================================
  */
 
@@ -23,7 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
     connectSSE();
     refreshAll();
     wireEvents();
-    logEvent('system', 'Org1 Admin Panel initialized');
+    logEvent('system', 'Org1 Admin Panel initialized (v2.0 — annotations enabled)');
 });
 
 function wireEvents() {
@@ -52,7 +53,7 @@ function connectSSE() {
         setTimeout(connectSSE, 5000);
     };
     
-    // Event handlers
+    // Anchor event handlers (existing)
     sseConnection.addEventListener('CONNECTED', () => {
         updateConnectionStatus(true);
     });
@@ -113,6 +114,50 @@ function connectSSE() {
         refreshRevocations();
     });
     
+    // Annotation event handlers (v2.0)
+    sseConnection.addEventListener('ANNOTATION_PROPOSED', (e) => {
+        const data = parseEventData(e);
+        logEvent('proposed', `📝 Annotation proposed: ${data.assetId || data.asset_id || 'unknown'} [${data.tier || ''}]`);
+        showToast('New annotation proposed - awaiting endorsements', 'warning');
+        refreshAnnotations();
+    });
+    
+    sseConnection.addEventListener('ANNOTATION_ENDORSED_ORG1', (e) => {
+        const data = parseEventData(e);
+        logEvent('endorsed', `📝 Annotation Org1 endorsed: ${data.assetId || data.asset_id || 'unknown'}`);
+        showToast('Annotation: Org1 endorsed', 'success');
+        refreshAnnotations();
+    });
+    
+    sseConnection.addEventListener('ANNOTATION_ENDORSED_ORG2', (e) => {
+        const data = parseEventData(e);
+        logEvent('endorsed', `📝 Annotation Org2 endorsed: ${data.assetId || data.asset_id || 'unknown'}`);
+        showToast('Annotation: Org2 endorsed', 'success');
+        refreshAnnotations();
+    });
+    
+    sseConnection.addEventListener('ANNOTATION_ACTIVE', (e) => {
+        const data = parseEventData(e);
+        const method = data.activationMethod || data.activation_method || '';
+        logEvent('activated', `📝 Annotation ACTIVE: ${data.assetId || data.asset_id || 'unknown'} (${method})`);
+        showToast('🤖 Annotation ACTIVATED!', 'success');
+        refreshAnnotations();
+    });
+    
+    sseConnection.addEventListener('ANNOTATION_REJECTED', (e) => {
+        const data = parseEventData(e);
+        logEvent('rejected', `📝 Annotation rejected: ${data.assetId || data.asset_id || 'unknown'}`);
+        showToast('Annotation rejected', 'error');
+        refreshAnnotations();
+    });
+    
+    sseConnection.addEventListener('ANNOTATION_REVOKED', (e) => {
+        const data = parseEventData(e);
+        logEvent('revoked', `📝 Annotation revoked: ${data.assetId || data.asset_id || 'unknown'}`);
+        showToast('Annotation revoked', 'error');
+        refreshAnnotations();
+    });
+    
     sseConnection.addEventListener('HEARTBEAT', () => {
         // Keep connection alive indicator
     });
@@ -168,6 +213,7 @@ function refreshAll() {
     refreshAnchors();
     refreshPending();
     refreshRevocations();
+    refreshAnnotations();
 }
 
 async function refreshAnchors() {
@@ -334,13 +380,106 @@ async function refreshRevocations() {
     }
 }
 
+// =============================================================================
+// Annotation Refresh (v2.0)
+// =============================================================================
+
+async function refreshAnnotations() {
+    try {
+        const data = await apiRequest('/events/snapshot');
+        const allAnnotations = data.annotations || [];
+        
+        const pendingAnnotations = allAnnotations.filter(a =>
+            a.state === 'ANN_PROPOSED' ||
+            a.state === 'ANN_ENDORSED_ORG1' ||
+            a.state === 'ANN_ENDORSED_ORG2'
+        );
+        
+        const activeAnnotations = allAnnotations.filter(a => a.state === 'ANN_ACTIVE');
+        
+        updateStat('annPendingCount', pendingAnnotations.length);
+        updateStat('annActiveCount', activeAnnotations.length);
+        
+        // Pending annotations table
+        const pendBody = document.getElementById('annPendingBody');
+        if (pendBody) {
+            if (pendingAnnotations.length === 0) {
+                pendBody.innerHTML = '<tr><td colspan="6" class="muted">No pending annotations</td></tr>';
+            } else {
+                pendBody.innerHTML = pendingAnnotations.map(a => {
+                    const org1Done = a.endorsed_org1;
+                    const org2Done = a.endorsed_org2;
+                    const needMyAction = !org1Done;
+                    
+                    const endorseHtml = `
+                        <div class="endorsement-status">
+                            <span class="org"><span class="${org1Done ? 'check' : 'wait'}">${org1Done ? '✓' : '○'}</span> Org1</span>
+                            <span class="org"><span class="${org2Done ? 'check' : 'wait'}">${org2Done ? '✓' : '○'}</span> Org2</span>
+                        </div>`;
+                    
+                    const statusBadge = needMyAction
+                        ? '<span class="badge action">Needs Your Action</span>'
+                        : '<span class="badge info">Waiting for Org2</span>';
+                    
+                    const actions = needMyAction
+                        ? `<div class="btn-group">
+                               <button class="btn good small" onclick="endorseAnnotation('${a.asset_id}')">✓ Endorse</button>
+                               <button class="btn danger small" onclick="rejectAnnotation('${a.asset_id}')">✗ Reject</button>
+                           </div>`
+                        : '<span class="muted">Waiting...</span>';
+                    
+                    const contentPreview = (a.content_text || '').substring(0, 60) + ((a.content_text || '').length > 60 ? '...' : '');
+                    
+                    return `
+                        <tr class="${needMyAction ? 'action-row' : ''}">
+                            <td><code>${a.asset_id}</code></td>
+                            <td><span class="badge ${a.tier === 'GOVERNED' ? 'warn' : 'info'}">${a.tier || 'N/A'}</span></td>
+                            <td class="muted" title="${(a.content_text || '').replace(/"/g, '&quot;')}">${contentPreview}</td>
+                            <td>${endorseHtml}</td>
+                            <td>${statusBadge}</td>
+                            <td>${actions}</td>
+                        </tr>`;
+                }).join('');
+            }
+        }
+        
+        // Active annotations table
+        const actBody = document.getElementById('annActiveBody');
+        if (actBody) {
+            if (activeAnnotations.length === 0) {
+                actBody.innerHTML = '<tr><td colspan="5" class="muted">No active annotations</td></tr>';
+            } else {
+                actBody.innerHTML = activeAnnotations.map(a => {
+                    const contentPreview = (a.content_text || '').substring(0, 80) + ((a.content_text || '').length > 80 ? '...' : '');
+                    
+                    return `
+                        <tr>
+                            <td><code>${a.asset_id}</code></td>
+                            <td><span class="badge ${a.tier === 'GOVERNED' ? 'warn' : 'info'}">${a.tier || 'N/A'}</span></td>
+                            <td class="muted" title="${(a.content_text || '').replace(/"/g, '&quot;')}">${contentPreview}</td>
+                            <td class="muted">${a.endorsed_org1 && a.endorsed_org2 ? 'Dual endorsed' : 'Auto-approved'}</td>
+                            <td>
+                                <div class="btn-group">
+                                    <button class="btn danger small" onclick="revokeAnnotation('${a.asset_id}')">Revoke</button>
+                                    <button class="btn small" onclick="queryAnnotation('${a.asset_id}')">Details</button>
+                                </div>
+                            </td>
+                        </tr>`;
+                }).join('');
+            }
+        }
+    } catch (error) {
+        console.error('Error loading annotations:', error);
+    }
+}
+
 function updateStat(id, value) {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
 }
 
 // =============================================================================
-// Claim Actions
+// Claim Actions (existing)
 // =============================================================================
 
 async function endorseClaim(assetId) {
@@ -373,7 +512,75 @@ async function rejectClaim(assetId) {
 }
 
 // =============================================================================
-// Revocation Actions
+// Annotation Actions (v2.0)
+// =============================================================================
+
+async function endorseAnnotation(assetId) {
+    if (!confirm(`Endorse annotation for ${assetId}?\n\nThis adds Org1's approval. The annotation becomes ACTIVE once both organizations endorse.`)) return;
+    
+    try {
+        const result = await apiRequest('/admin/endorse-annotation', 'POST', { asset_id: assetId });
+        if (result.is_fully_endorsed) {
+            showToast('🤖 Annotation ACTIVATED!', 'success');
+        } else {
+            showToast('✓ Annotation endorsed. Waiting for Org2...', 'success');
+        }
+        refreshAnnotations();
+    } catch (error) {
+        showToast(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function rejectAnnotation(assetId) {
+    const reason = prompt('Reason for rejecting annotation:');
+    if (reason === null) return;
+    
+    try {
+        await apiRequest('/admin/reject-annotation', 'POST', { asset_id: assetId, reason });
+        showToast('Annotation rejected', 'success');
+        refreshAnnotations();
+    } catch (error) {
+        showToast(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function revokeAnnotation(assetId) {
+    const reason = prompt('Reason for revoking annotation:');
+    if (reason === null) return;
+    
+    if (!confirm(`Revoke annotation for ${assetId}?\n\nThis will remove the active annotation.`)) return;
+    
+    try {
+        await apiRequest('/admin/revoke-annotation', 'POST', { asset_id: assetId, reason });
+        showToast('Annotation revoked', 'success');
+        refreshAnnotations();
+    } catch (error) {
+        showToast(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function queryAnnotation(assetId) {
+    const id = assetId || document.getElementById('queryAssetId')?.value?.trim();
+    const resultBox = document.getElementById('queryResult');
+    
+    if (!id) {
+        showToast('Enter an asset ID', 'error');
+        return;
+    }
+    
+    try {
+        const result = await apiRequest(`/admin/annotations/${id}`);
+        resultBox.textContent = JSON.stringify(result, null, 2);
+        resultBox.classList.add('visible');
+        resultBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (error) {
+        resultBox.textContent = `Error: ${error.message}`;
+        resultBox.classList.add('visible');
+    }
+}
+
+// =============================================================================
+// Revocation Actions (existing)
 // =============================================================================
 
 function initiateRevokeQuick(assetId) {
@@ -429,7 +636,7 @@ async function rejectRevoke(assetId) {
 }
 
 // =============================================================================
-// Query Actions
+// Query Actions (existing)
 // =============================================================================
 
 async function queryClaim(event) {
@@ -522,8 +729,13 @@ window.refreshAll = refreshAll;
 window.refreshAnchors = refreshAnchors;
 window.refreshPending = refreshPending;
 window.refreshRevocations = refreshRevocations;
+window.refreshAnnotations = refreshAnnotations;
 window.endorseClaim = endorseClaim;
 window.rejectClaim = rejectClaim;
+window.endorseAnnotation = endorseAnnotation;
+window.rejectAnnotation = rejectAnnotation;
+window.revokeAnnotation = revokeAnnotation;
+window.queryAnnotation = queryAnnotation;
 window.initiateRevokeQuick = initiateRevokeQuick;
 window.endorseRevoke = endorseRevoke;
 window.rejectRevoke = rejectRevoke;

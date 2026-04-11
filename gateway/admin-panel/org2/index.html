@@ -56,7 +56,74 @@
             </div>
         </section>
 
-        <!-- Pending Claims - Action Required -->
+        <!-- Annotation Stats -->
+        <section class="stats-row" style="grid-template-columns: repeat(2, 1fr);">
+            <div class="stat-card highlight">
+                <div class="stat-icon action">📝</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="annPendingCount">0</div>
+                    <div class="stat-label">Pending Annotations</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon active">🤖</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="annActiveCount">0</div>
+                    <div class="stat-label">Active Annotations</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Pending Annotations -->
+        <section class="card">
+            <div class="card-header">
+                <h2>📝 Pending Annotations</h2>
+                <button class="btn small" onclick="refreshAnnotations()">Refresh</button>
+            </div>
+            <div class="tableWrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Asset ID</th>
+                            <th>Tier</th>
+                            <th>Content</th>
+                            <th>Endorsements</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="annPendingBody">
+                        <tr><td colspan="6" class="muted">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Active Annotations -->
+        <section class="card">
+            <div class="card-header">
+                <h2>🤖 Active Annotations</h2>
+                <button class="btn small" onclick="refreshAnnotations()">Refresh</button>
+            </div>
+            <div class="tableWrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Asset ID</th>
+                            <th>Tier</th>
+                            <th>Content</th>
+                            <th>Activation</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="annActiveBody">
+                        <tr><td colspan="5" class="muted">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Pending Claims -->
         <section class="card">
             <div class="card-header">
                 <h2>📋 Pending Claims</h2>
@@ -158,7 +225,7 @@
                     <form id="revokeForm">
                         <label class="field">
                             <span>Asset ID</span>
-                            <input type="text" id="revokeAssetId" placeholder="e.g., tv_TAG_20" required>
+                            <input type="text" id="revokeAssetId" placeholder="e.g., TAG_42" required>
                         </label>
                         <label class="field">
                             <span>Reason</span>
@@ -169,13 +236,14 @@
                 </div>
                 
                 <div class="action-box">
-                    <h3>Query Claim</h3>
+                    <h3>Query Claim / Annotation</h3>
                     <form id="queryForm">
                         <label class="field">
                             <span>Asset ID</span>
-                            <input type="text" id="queryAssetId" placeholder="e.g., tv_TAG_20" required>
+                            <input type="text" id="queryAssetId" placeholder="e.g., TAG_42" required>
                         </label>
-                        <button type="submit" class="btn primary">Query</button>
+                        <button type="submit" class="btn primary">Query Claim</button>
+                        <button type="button" class="btn small" style="margin-top:6px" onclick="queryAnnotation()">Query Annotation</button>
                     </form>
                     <pre id="queryResult" class="result-box"></pre>
                 </div>

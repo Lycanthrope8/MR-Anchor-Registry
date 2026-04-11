@@ -4,6 +4,8 @@
  *
  * SSE broadcasts are no longer emitted here.  They are driven by Fabric
  * chaincode events (see events.js).
+ *
+ * v2.0: Added annotation admin routes (endorse, reject, revoke, list).
  * ==============================================================================
  */
 
@@ -237,6 +239,103 @@ router.get('/status', (req, res) => {
         connected: req.fabricClient?.isConnected() || false,
         sse_clients: getClientCount()
     });
+});
+
+// =============================================================================
+// ANNOTATION ADMIN ROUTES (v2.0)
+// =============================================================================
+
+/**
+ * Endorse an annotation (admin version)
+ * POST /admin/endorse-annotation
+ */
+router.post('/endorse-annotation', async (req, res) => {
+    try {
+        const { asset_id } = req.body;
+        if (!asset_id) {
+            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        }
+        const fabricClient = req.fabricClient;
+        logger.info(`[${req.orgId}] EndorseAnnotation via admin: ${asset_id}`);
+        const result = await fabricClient.endorseAnnotation(asset_id);
+        logger.info(`Annotation endorsed via admin: ${asset_id} by ${fabricClient.getMspId()}`);
+        res.json(result);
+    } catch (error) {
+        logger.error(`Admin endorse annotation error: ${error.message}`);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * Reject an annotation (admin version)
+ * POST /admin/reject-annotation
+ */
+router.post('/reject-annotation', async (req, res) => {
+    try {
+        const { asset_id, reason } = req.body;
+        if (!asset_id) {
+            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        }
+        const fabricClient = req.fabricClient;
+        logger.info(`[${req.orgId}] RejectAnnotation via admin: ${asset_id}`);
+        const result = await fabricClient.rejectAnnotation(asset_id, reason || '');
+        logger.info(`Annotation rejected via admin: ${asset_id} by ${fabricClient.getMspId()}`);
+        res.json(result);
+    } catch (error) {
+        logger.error(`Admin reject annotation error: ${error.message}`);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * Revoke an active annotation (admin version)
+ * POST /admin/revoke-annotation
+ */
+router.post('/revoke-annotation', async (req, res) => {
+    try {
+        const { asset_id, reason } = req.body;
+        if (!asset_id) {
+            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        }
+        const fabricClient = req.fabricClient;
+        logger.info(`[${req.orgId}] RevokeAnnotation via admin: ${asset_id}`);
+        const result = await fabricClient.revokeAnnotation(asset_id, reason || '');
+        logger.info(`Annotation revoked via admin: ${asset_id} by ${fabricClient.getMspId()}`);
+        res.json(result);
+    } catch (error) {
+        logger.error(`Admin revoke annotation error: ${error.message}`);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * Get all active annotations
+ * GET /admin/annotations
+ */
+router.get('/annotations', async (req, res) => {
+    try {
+        const fabricClient = req.fabricClient;
+        const result = await fabricClient.getAllActiveAnnotations();
+        res.json(result);
+    } catch (error) {
+        logger.error(`Get all annotations error: ${error.message}`);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * Get annotation for a specific asset
+ * GET /admin/annotations/:assetId
+ */
+router.get('/annotations/:assetId', async (req, res) => {
+    try {
+        const fabricClient = req.fabricClient;
+        const result = await fabricClient.getAnnotation(req.params.assetId);
+        res.json(result);
+    } catch (error) {
+        logger.error(`Get annotation error: ${error.message}`);
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 module.exports = router;

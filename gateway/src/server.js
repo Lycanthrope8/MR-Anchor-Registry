@@ -13,6 +13,8 @@
  * SSE is ledger-driven: this gateway subscribes to Fabric chaincode events
  * and broadcasts them to all connected SSE clients.  Events committed via
  * the OTHER gateway are visible here too (both peers receive the same blocks).
+ *
+ * v2.0: Added /annotations routes for governed AI annotations.
  * ==============================================================================
  */
 
@@ -25,6 +27,7 @@ const FabricClient = require('./services/fabricClient');
 const claimsRoutes = require('./routes/claims');
 const adminRoutes = require('./routes/admin');
 const eventsRoutes = require('./routes/events');
+const annotationsRoutes = require('./routes/annotations');
 const benchmarkRoutes = require('./routes/benchmark');
 const logger = require('./services/logger');
 const { experimentLogMiddleware } = require('./services/experimentLogger');
@@ -101,6 +104,7 @@ app.get('/health', (req, res) => {
 
 // API Routes
 app.use('/claims', claimsRoutes);
+app.use('/annotations', annotationsRoutes);
 app.use('/admin', adminRoutes);
 app.use('/admin', benchmarkRoutes);
 app.use('/events', eventsRoutes);
@@ -144,13 +148,14 @@ async function startServer() {
 
     app.listen(PORT, () => {
         logger.info(`============================================`);
-        logger.info(`MR Anchor Registry Gateway`);
+        logger.info(`MR Anchor Registry Gateway v2.0`);
         logger.info(`============================================`);
         logger.info(`Server running on port ${PORT}`);
         logger.info(`Organization: ${ORG} (FIXED — not switchable)`);
         logger.info(`MSP ID: ${fabricClient?.getMspId() || 'N/A'}`);
         logger.info(`Experiment logging: ENABLED`);
         logger.info(`SSE source: Fabric chaincode events (ledger-driven)`);
+        logger.info(`Annotation routes: /annotations/*`);
         logger.info(`============================================`);
     });
 }

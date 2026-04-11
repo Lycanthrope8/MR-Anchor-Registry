@@ -4,6 +4,7 @@
  *
  * Each instance connects as ONE organization identity.
  * Added: subscribeToEvents() for ledger-driven SSE.
+ * v2.0: Added annotation lifecycle methods.
  * ==============================================================================
  */
 
@@ -254,7 +255,7 @@ class FabricClient {
     }
 
     // =========================================================================
-    // CHAINCODE TRANSACTION METHODS
+    // ANCHOR CHAINCODE TRANSACTION METHODS
     // =========================================================================
 
     async proposeAnchor(assetId, poseSite, qualityMetrics) {
@@ -303,7 +304,7 @@ class FabricClient {
     }
 
     // =========================================================================
-    // QUERY METHODS
+    // ANCHOR QUERY METHODS
     // =========================================================================
 
     async getClaim(assetId) {
@@ -348,7 +349,7 @@ class FabricClient {
         const parsed = resultToJson(result);
         if (!parsed) {
             return {
-                success: true, assets: [],
+                success: true, assets: [], annotations: [],
                 last_event_id: null,
                 timestamp: new Date().toISOString()
             };
@@ -359,6 +360,78 @@ class FabricClient {
     async getClaimHistory(assetId) {
         if (!this.connected) throw new Error('Not connected to Fabric network');
         const result = await this.contract.evaluateTransaction('GetClaimHistory', assetId);
+        const parsed = resultToJson(result);
+        if (!parsed) return { history: [], count: 0 };
+        return parsed;
+    }
+
+    // =========================================================================
+    // ANNOTATION CHAINCODE TRANSACTION METHODS (v2.0)
+    // =========================================================================
+
+    async proposeAnnotation(assetId, contentText, tier, classContext, generatorId, promptHash) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        logger.info(`[${this.org}] ProposeAnnotation: ${assetId} (tier=${tier})`);
+        const result = await this.contract.submitTransaction(
+            'ProposeAnnotation',
+            assetId,
+            contentText,
+            tier,
+            JSON.stringify(classContext),
+            generatorId,
+            promptHash
+        );
+        return resultToJson(result);
+    }
+
+    async endorseAnnotation(assetId) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        logger.info(`[${this.org}] EndorseAnnotation: ${assetId}`);
+        const result = await this.contract.submitTransaction('EndorseAnnotation', assetId);
+        return resultToJson(result);
+    }
+
+    async rejectAnnotation(assetId, reason) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        logger.info(`[${this.org}] RejectAnnotation: ${assetId}`);
+        const result = await this.contract.submitTransaction('RejectAnnotation', assetId, reason || '');
+        return resultToJson(result);
+    }
+
+    async revokeAnnotation(assetId, reason) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        logger.info(`[${this.org}] RevokeAnnotation: ${assetId}`);
+        const result = await this.contract.submitTransaction('RevokeAnnotation', assetId, reason || '');
+        return resultToJson(result);
+    }
+
+    // =========================================================================
+    // ANNOTATION QUERY METHODS (v2.0)
+    // =========================================================================
+
+    async getAnnotation(assetId) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        const result = await this.contract.evaluateTransaction('GetAnnotation', assetId);
+        return resultToJson(result);
+    }
+
+    async getActiveAnnotation(assetId) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        const result = await this.contract.evaluateTransaction('GetActiveAnnotation', assetId);
+        return resultToJson(result);
+    }
+
+    async getAllActiveAnnotations() {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        const result = await this.contract.evaluateTransaction('GetAllActiveAnnotations');
+        const parsed = resultToJson(result);
+        if (!parsed) return { annotations: [], count: 0 };
+        return parsed;
+    }
+
+    async getAnnotationHistory(assetId) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        const result = await this.contract.evaluateTransaction('GetAnnotationHistory', assetId);
         const parsed = resultToJson(result);
         if (!parsed) return { history: [], count: 0 };
         return parsed;
