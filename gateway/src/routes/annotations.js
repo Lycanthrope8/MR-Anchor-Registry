@@ -2,13 +2,8 @@
  * ==============================================================================
  * annotations.js - Annotation routes for governed AI annotations
  *
- * Follows the same patterns as claims.js:
- * - SSE broadcasts are driven by Fabric chaincode events (see events.js)
- * - registerCorrelation() is called before submitting for experiment tracing
- * - req.fabricClient is the org-scoped Fabric client from middleware
- *
- * The /annotations/request endpoint calls the mock annotation generator
- * on localhost:5001, then submits the result to chaincode.
+ * v2.1: All endpoints now require intent_type parameter (multi-card model).
+ *       Valid intent types: ASK_ANCHOR, ACTION_SUGGEST
  * ==============================================================================
  */
 
@@ -20,6 +15,9 @@ const { registerCorrelation } = require('./events');
 
 // Annotation generator service URL (runs on gateway host per Decision 3)
 const ANNOTATION_SERVICE_URL = process.env.ANNOTATION_SERVICE_URL || 'http://localhost:5001';
+
+// Valid intent types (must match chaincode)
+const VALID_INTENT_TYPES = ['ASK_ANCHOR', 'ACTION_SUGGEST'];
 
 // ─── Helper: call the annotation generator service ──────────────────────
 
@@ -63,36 +61,52 @@ function callAnnotationService(body) {
     });
 }
 
+// ─── Helper: validate intent_type ────────────────────────────────────────
+
+function validateIntentType(intentType) {
+    if (!intentType) {
+        return { valid: false, error: 'Missing required field: intent_type' };
+    }
+    if (!VALID_INTENT_TYPES.includes(intentType)) {
+        return { valid: false, error: `Invalid intent_type: ${intentType}. Must be one of: ${VALID_INTENT_TYPES.join(', ')}` };
+    }
+    return { valid: true };
+}
+
 // =============================================================================
 // POST /annotations/request — Full orchestration: generate → propose on-chain
 // =============================================================================
 
 router.post('/request', async (req, res) => {
     try {
-        const { asset_id, tier, class_name, confidence, req_id, run_id } = req.body;
+        const { asset_id, tier, intent_type, class_name, confidence, mode, req_id, run_id } = req.body;
 
         if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
+            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        }
+
+        const intentCheck = validateIntentType(intent_type);
+        if (!intentCheck.valid) {
+            return res.status(400).json({ success: false, error: intentCheck.error });
         }
 
         const annotationTier = tier || 'ADVISORY';
         const fabricClient = req.fabricClient;
         const orgId = req.orgId;
 
-        logger.info(`[${orgId}] Annotation request: ${asset_id} (tier=${annotationTier})` +
+        logger.info(`[${orgId}] Annotation request: ${asset_id} (tier=${annotationTier}, intentType=${intent_type}, mode=${mode || 'default'})` +
                     (req_id ? ` (req_id=${req_id})` : ''));
 
-        // 1. Call annotation generator service
+        // 1. Call annotation generator service (v1.0: pass mode for LLM/mock selection)
         let generated;
         try {
             generated = await callAnnotationService({
                 asset_id,
                 tier: annotationTier,
+                intent_type,
                 class_name: class_name || 'unknown',
-                confidence: confidence || 0.0
+                confidence: confidence || 0.0,
+                mode: mode || undefined
             });
         } catch (genError) {
             logger.error(`Annotation generator error: ${genError.message}`);
@@ -102,12 +116,14 @@ router.post('/request', async (req, res) => {
             });
         }
 
-        logger.info(`Generator returned: ${generated.annotation_text.substring(0, 60)}...`);
+        const modeUsed = generated.mode_used || 'unknown';
+        logger.info(`Generator [${modeUsed}] (${generated.generator_id}): ${generated.annotation_text.substring(0, 60)}...`);
 
         // 2. Register correlation for experiment tracing
-        registerCorrelation(asset_id, req_id);
+        // v2.1: use composite key for correlation
+        registerCorrelation(`${asset_id}:${intent_type}`, req_id);
 
-        // 3. Submit to chaincode
+        // 3. Submit to chaincode (v2.1: intentType is the last parameter)
         const classContext = {
             className: class_name || 'unknown',
             confidence: confidence || 0.0
@@ -119,12 +135,11 @@ router.post('/request', async (req, res) => {
             annotationTier,
             classContext,
             generated.generator_id,
-            generated.prompt_hash
+            generated.prompt_hash,
+            intent_type
         );
 
-        logger.info(`Annotation proposed: ${asset_id} → ${result.state}`);
-
-        // NOTE: SSE events are emitted by the chaincode event listener, NOT here.
+        logger.info(`Annotation proposed: ${asset_id}:${intent_type} → ${result.state} (generator=${generated.generator_id}, mode=${modeUsed})`);
 
         res.json(result);
 
@@ -140,26 +155,28 @@ router.post('/request', async (req, res) => {
 
 router.post('/endorse', async (req, res) => {
     try {
-        const { asset_id, req_id } = req.body;
+        const { asset_id, intent_type, req_id } = req.body;
 
         if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
+            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        }
+
+        const intentCheck = validateIntentType(intent_type);
+        if (!intentCheck.valid) {
+            return res.status(400).json({ success: false, error: intentCheck.error });
         }
 
         const fabricClient = req.fabricClient;
         const orgId = req.orgId;
 
-        logger.info(`[${orgId}] EndorseAnnotation: ${asset_id}` +
+        logger.info(`[${orgId}] EndorseAnnotation: ${asset_id}:${intent_type}` +
                     (req_id ? ` (req_id=${req_id})` : ''));
 
-        registerCorrelation(asset_id, req_id);
+        registerCorrelation(`${asset_id}:${intent_type}`, req_id);
 
-        const result = await fabricClient.endorseAnnotation(asset_id);
+        const result = await fabricClient.endorseAnnotation(asset_id, intent_type);
 
-        logger.info(`Annotation endorsed: ${asset_id} by ${fabricClient.getMspId()}`);
+        logger.info(`Annotation endorsed: ${asset_id}:${intent_type} by ${fabricClient.getMspId()}`);
 
         res.json(result);
 
@@ -175,23 +192,25 @@ router.post('/endorse', async (req, res) => {
 
 router.post('/reject', async (req, res) => {
     try {
-        const { asset_id, reason } = req.body;
+        const { asset_id, intent_type, reason } = req.body;
 
         if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
+            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        }
+
+        const intentCheck = validateIntentType(intent_type);
+        if (!intentCheck.valid) {
+            return res.status(400).json({ success: false, error: intentCheck.error });
         }
 
         const fabricClient = req.fabricClient;
         const orgId = req.orgId;
 
-        logger.info(`[${orgId}] RejectAnnotation: ${asset_id}`);
+        logger.info(`[${orgId}] RejectAnnotation: ${asset_id}:${intent_type}`);
 
-        const result = await fabricClient.rejectAnnotation(asset_id, reason || '');
+        const result = await fabricClient.rejectAnnotation(asset_id, intent_type, reason || '');
 
-        logger.info(`Annotation rejected: ${asset_id} by ${fabricClient.getMspId()}`);
+        logger.info(`Annotation rejected: ${asset_id}:${intent_type} by ${fabricClient.getMspId()}`);
 
         res.json(result);
 
@@ -207,23 +226,25 @@ router.post('/reject', async (req, res) => {
 
 router.post('/revoke', async (req, res) => {
     try {
-        const { asset_id, reason } = req.body;
+        const { asset_id, intent_type, reason } = req.body;
 
         if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
+            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        }
+
+        const intentCheck = validateIntentType(intent_type);
+        if (!intentCheck.valid) {
+            return res.status(400).json({ success: false, error: intentCheck.error });
         }
 
         const fabricClient = req.fabricClient;
         const orgId = req.orgId;
 
-        logger.info(`[${orgId}] RevokeAnnotation: ${asset_id}`);
+        logger.info(`[${orgId}] RevokeAnnotation: ${asset_id}:${intent_type}`);
 
-        const result = await fabricClient.revokeAnnotation(asset_id, reason || '');
+        const result = await fabricClient.revokeAnnotation(asset_id, intent_type, reason || '');
 
-        logger.info(`Annotation revoked: ${asset_id} by ${fabricClient.getMspId()}`);
+        logger.info(`Annotation revoked: ${asset_id}:${intent_type} by ${fabricClient.getMspId()}`);
 
         res.json(result);
 
@@ -234,14 +255,43 @@ router.post('/revoke', async (req, res) => {
 });
 
 // =============================================================================
-// GET /annotations/:assetId — Get annotation details
+// GET /annotations/:assetId — Get all annotations (both intent types) for asset
 // =============================================================================
 
 router.get('/:assetId', async (req, res) => {
     try {
         const { assetId } = req.params;
+
+        // Avoid matching routes like /request, /endorse etc. as assetId
+        const reservedWords = ['request', 'endorse', 'reject', 'revoke'];
+        if (reservedWords.includes(assetId.toLowerCase())) {
+            return res.status(404).json({ success: false, error: 'Not found' });
+        }
+
         const fabricClient = req.fabricClient;
-        const result = await fabricClient.getAnnotation(assetId);
+        const result = await fabricClient.getActiveAnnotationsForAsset(assetId);
+        res.json(result);
+    } catch (error) {
+        logger.error(`Get annotations for asset error: ${error.message}`);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// =============================================================================
+// GET /annotations/:assetId/:intentType — Get annotation details
+// =============================================================================
+
+router.get('/:assetId/:intentType', async (req, res) => {
+    try {
+        const { assetId, intentType } = req.params;
+
+        const intentCheck = validateIntentType(intentType);
+        if (!intentCheck.valid) {
+            return res.status(400).json({ success: false, error: intentCheck.error });
+        }
+
+        const fabricClient = req.fabricClient;
+        const result = await fabricClient.getAnnotation(assetId, intentType);
         res.json(result);
     } catch (error) {
         logger.error(`Get annotation error: ${error.message}`);
@@ -250,14 +300,20 @@ router.get('/:assetId', async (req, res) => {
 });
 
 // =============================================================================
-// GET /annotations/:assetId/active — Get active annotation for asset
+// GET /annotations/:assetId/:intentType/active — Get active annotation
 // =============================================================================
 
-router.get('/:assetId/active', async (req, res) => {
+router.get('/:assetId/:intentType/active', async (req, res) => {
     try {
-        const { assetId } = req.params;
+        const { assetId, intentType } = req.params;
+
+        const intentCheck = validateIntentType(intentType);
+        if (!intentCheck.valid) {
+            return res.status(400).json({ success: false, error: intentCheck.error });
+        }
+
         const fabricClient = req.fabricClient;
-        const result = await fabricClient.getActiveAnnotation(assetId);
+        const result = await fabricClient.getActiveAnnotation(assetId, intentType);
         res.json(result);
     } catch (error) {
         logger.error(`Get active annotation error: ${error.message}`);
@@ -266,14 +322,20 @@ router.get('/:assetId/active', async (req, res) => {
 });
 
 // =============================================================================
-// GET /annotations/:assetId/history — Get annotation ledger history
+// GET /annotations/:assetId/:intentType/history — Get annotation ledger history
 // =============================================================================
 
-router.get('/:assetId/history', async (req, res) => {
+router.get('/:assetId/:intentType/history', async (req, res) => {
     try {
-        const { assetId } = req.params;
+        const { assetId, intentType } = req.params;
+
+        const intentCheck = validateIntentType(intentType);
+        if (!intentCheck.valid) {
+            return res.status(400).json({ success: false, error: intentCheck.error });
+        }
+
         const fabricClient = req.fabricClient;
-        const result = await fabricClient.getAnnotationHistory(assetId);
+        const result = await fabricClient.getAnnotationHistory(assetId, intentType);
         res.json(result);
     } catch (error) {
         logger.error(`Get annotation history error: ${error.message}`);

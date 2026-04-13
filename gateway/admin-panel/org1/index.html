@@ -74,7 +74,7 @@
             </div>
         </section>
 
-        <!-- Pending Annotations -->
+        <!-- Pending Annotations (v2.1: Intent column added) -->
         <section class="card">
             <div class="card-header">
                 <h2>📝 Pending Annotations</h2>
@@ -85,6 +85,7 @@
                     <thead>
                         <tr>
                             <th>Asset ID</th>
+                            <th>Intent</th>
                             <th>Tier</th>
                             <th>Content</th>
                             <th>Endorsements</th>
@@ -93,13 +94,13 @@
                         </tr>
                     </thead>
                     <tbody id="annPendingBody">
-                        <tr><td colspan="6" class="muted">Loading...</td></tr>
+                        <tr><td colspan="7" class="muted">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
         </section>
 
-        <!-- Active Annotations -->
+        <!-- Active Annotations (v2.1: Intent column added) -->
         <section class="card">
             <div class="card-header">
                 <h2>🤖 Active Annotations</h2>
@@ -110,6 +111,7 @@
                     <thead>
                         <tr>
                             <th>Asset ID</th>
+                            <th>Intent</th>
                             <th>Tier</th>
                             <th>Content</th>
                             <th>Activation</th>
@@ -117,13 +119,13 @@
                         </tr>
                     </thead>
                     <tbody id="annActiveBody">
-                        <tr><td colspan="5" class="muted">Loading...</td></tr>
+                        <tr><td colspan="6" class="muted">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
         </section>
 
-        <!-- Pending Claims - Action Required -->
+        <!-- Pending Claims -->
         <section class="card">
             <div class="card-header">
                 <h2>📋 Pending Claims</h2>
@@ -241,6 +243,13 @@
                         <label class="field">
                             <span>Asset ID</span>
                             <input type="text" id="queryAssetId" placeholder="e.g., TAG_42" required>
+                        </label>
+                        <label class="field">
+                            <span>Intent Type (for annotation query)</span>
+                            <select id="queryIntentType">
+                                <option value="ASK_ANCHOR">ASK_ANCHOR</option>
+                                <option value="ACTION_SUGGEST">ACTION_SUGGEST</option>
+                            </select>
                         </label>
                         <button type="submit" class="btn primary">Query Claim</button>
                         <button type="button" class="btn small" style="margin-top:6px" onclick="queryAnnotation()">Query Annotation</button>

@@ -2,18 +2,8 @@
  * ==============================================================================
  * events.js - Server-Sent Events (SSE) driven by Fabric chaincode events
  *
- * SSE events are now sourced from committed ledger state, not from in-process
- * route handlers.  Each gateway subscribes to Fabric chaincode events via the
- * SDK.  Because both peers receive the same committed blocks, SSE clients
- * connected to EITHER gateway see the SAME global event stream.
- *
- * Experiment traceability: route handlers call registerCorrelation(assetId,
- * reqId) before submitting.  When the chaincode event arrives, the req_id is
- * attached to the SSE broadcast for commit-confirm latency measurement.
- *
- * v2.0: Added annotation event translation (ANNOTATION_PROPOSED, 
- *       ANNOTATION_ENDORSED_ORG1/2, ANNOTATION_ACTIVE, ANNOTATION_REJECTED,
- *       ANNOTATION_REVOKED).
+ * v2.1: Annotation events now include intentType / intent_type field.
+ *       Correlation key may be composite (assetId:intentType) for annotations.
  * ==============================================================================
  */
 
@@ -39,9 +29,6 @@ function formatSseMessage(eventId, eventType, data) {
     return message;
 }
 
-/**
- * Broadcast event to ALL connected SSE clients (internal only).
- */
 function broadcastEvent(eventType, eventData, reqId) {
     const eventId = generateEventId();
     const timestamp = new Date().toISOString();
@@ -76,34 +63,30 @@ function broadcastEvent(eventType, eventData, reqId) {
     return eventId;
 }
 
-// ─── Correlation Map (for experiment req_id enrichment) ────────────────────
+// ─── Correlation Map ───────────────────────────────────────────────────────
 
-const correlationMap = new Map();       // assetId → { reqId, ts }
-const CORRELATION_TTL_MS = 120_000;     // 2 min TTL
+const correlationMap = new Map();
+const CORRELATION_TTL_MS = 120_000;
 
 /**
- * Register a correlation so that the chaincode event for this assetId
+ * Register a correlation so that the chaincode event for this key
  * will carry the req_id when broadcast via SSE.
- *
- * Called by route handlers BEFORE submitting the Fabric transaction.
+ * 
+ * v2.1: For annotations, the key may be "assetId:intentType".
  */
-function registerCorrelation(assetId, reqId) {
-    if (!assetId || !reqId) return;
-    correlationMap.set(assetId, { reqId, ts: Date.now() });
+function registerCorrelation(key, reqId) {
+    if (!key || !reqId) return;
+    correlationMap.set(key, { reqId, ts: Date.now() });
 }
 
-/**
- * Look up and consume a correlation entry.
- */
-function consumeCorrelation(assetId) {
-    if (!assetId) return null;
-    const entry = correlationMap.get(assetId);
+function consumeCorrelation(key) {
+    if (!key) return null;
+    const entry = correlationMap.get(key);
     if (!entry) return null;
-    correlationMap.delete(assetId);
+    correlationMap.delete(key);
     return entry.reqId;
 }
 
-// Periodic cleanup of stale correlations
 setInterval(() => {
     const now = Date.now();
     for (const [key, val] of correlationMap) {
@@ -115,27 +98,19 @@ setInterval(() => {
 
 // ─── Chaincode Event → SSE Translation ────────────────────────────────────
 
-/**
- * Convert a chaincode event payload into a dual-case SSE payload
- * that is backward-compatible with Unity (camelCase) and admin panels
- * (snake_case).
- */
 function chaincodeEventToSsePayload(eventName, payload) {
-    // The chaincode _emitEvent already provides: eventId, type, timestamp, + data fields
-    // We normalize to include both cases for downstream consumers.
-
     const base = {};
 
-    // Common fields from chaincode payload
+    // Common fields
     if (payload.assetId)        { base.asset_id = payload.assetId;  base.assetId = payload.assetId; }
     if (payload.claimId)        { base.claim_id = payload.claimId;  base.claimId = payload.claimId; }
     if (payload.annotationId)   { base.annotation_id = payload.annotationId;  base.annotationId = payload.annotationId; }
+    // v2.1: intentType on all annotation events
+    if (payload.intentType)     { base.intent_type = payload.intentType;  base.intentType = payload.intentType; }
 
     switch (eventName) {
 
-        // =================================================================
-        // ANCHOR CLAIM EVENTS (existing)
-        // =================================================================
+        // ANCHOR CLAIM EVENTS
 
         case 'CLAIM_PROPOSED':
             base.proposed_via_org = payload.proposedViaOrg || '';
@@ -197,9 +172,7 @@ function chaincodeEventToSsePayload(eventName, payload) {
             base.state = 'ACTIVE';
             break;
 
-        // =================================================================
-        // ANNOTATION EVENTS (v2.0)
-        // =================================================================
+        // ANNOTATION EVENTS (v2.1: all include intentType)
 
         case 'ANNOTATION_PROPOSED':
             base.tier = payload.tier || '';
@@ -228,7 +201,6 @@ function chaincodeEventToSsePayload(eventName, payload) {
             base.anchor_claim_id = payload.anchorClaimId || '';
             base.anchorClaimId = payload.anchorClaimId || '';
             base.state = 'ANN_ACTIVE';
-            // Include endorsement info if available
             if (payload.finalEndorser) {
                 base.final_endorser = payload.finalEndorser;
                 base.finalEndorser = payload.finalEndorser;
@@ -254,7 +226,6 @@ function chaincodeEventToSsePayload(eventName, payload) {
             break;
 
         default:
-            // Pass through unknown events
             Object.assign(base, payload);
             break;
     }
@@ -264,12 +235,21 @@ function chaincodeEventToSsePayload(eventName, payload) {
 
 /**
  * Start the chaincode event listener.
- * Called once from server.js after the FabricClient is connected.
+ * v2.1: Annotation correlations use composite key assetId:intentType
  */
 function startChaincodeEventListener(fabricClient) {
     fabricClient.subscribeToEvents((eventName, payload, transactionId, blockNumber) => {
         const assetId = payload.assetId || payload.asset_id || null;
-        const reqId = consumeCorrelation(assetId);
+        const intentType = payload.intentType || payload.intent_type || null;
+
+        // Try composite key first (for annotations), then plain assetId (for anchors)
+        let reqId = null;
+        if (assetId && intentType) {
+            reqId = consumeCorrelation(`${assetId}:${intentType}`);
+        }
+        if (!reqId && assetId) {
+            reqId = consumeCorrelation(assetId);
+        }
 
         const ssePayload = chaincodeEventToSsePayload(eventName, payload);
         ssePayload.tx_id = transactionId;
@@ -281,10 +261,6 @@ function startChaincodeEventListener(fabricClient) {
 
 // ─── Express Routes ───────────────────────────────────────────────────────
 
-/**
- * SSE Stream endpoint
- * GET /events/stream
- */
 router.get('/stream', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -331,10 +307,6 @@ router.get('/stream', (req, res) => {
     });
 });
 
-/**
- * Get current snapshot (now includes annotations)
- * GET /events/snapshot
- */
 router.get('/snapshot', async (req, res) => {
     try {
         const fabricClient = req.fabricClient;
@@ -346,19 +318,11 @@ router.get('/snapshot', async (req, res) => {
     }
 });
 
-/**
- * Get connection count (for debugging)
- * GET /events/connections
- */
 router.get('/connections', (req, res) => {
     const clientIds = Array.from(clients.keys());
     res.json({ count: clients.size, clients: clientIds });
 });
 
-/**
- * Manual event emission (for testing only — NOT the normal SSE path)
- * POST /events/emit
- */
 router.post('/emit', (req, res) => {
     const { type, data } = req.body;
     if (!type) {

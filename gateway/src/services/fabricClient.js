@@ -5,6 +5,7 @@
  * Each instance connects as ONE organization identity.
  * Added: subscribeToEvents() for ledger-driven SSE.
  * v2.0: Added annotation lifecycle methods.
+ * v2.1: All annotation methods now require intentType parameter (multi-card).
  * ==============================================================================
  */
 
@@ -63,9 +64,6 @@ class FabricClient {
         this.eventIterator = null;
     }
 
-    /**
-     * Get organization-specific paths
-     */
     getPaths() {
         const domain = this.org === 'org1'
             ? 'org1.anchor-registry.com'
@@ -86,9 +84,6 @@ class FabricClient {
         };
     }
 
-    /**
-     * Load TLS credentials
-     */
     async loadTlsCredentials() {
         const paths = this.getPaths();
         if (!fs.existsSync(paths.tlsCertPath)) {
@@ -98,9 +93,6 @@ class FabricClient {
         return grpc.credentials.createSsl(tlsCert);
     }
 
-    /**
-     * Load user identity (certificate and private key)
-     */
     async loadIdentity() {
         const paths = this.getPaths();
 
@@ -129,9 +121,6 @@ class FabricClient {
         return { certificate, privateKeyPem };
     }
 
-    /**
-     * Connect to the Fabric network
-     */
     async connect() {
         try {
             const paths = this.getPaths();
@@ -162,7 +151,6 @@ class FabricClient {
                 commitStatusOptions: () => ({ deadline: Date.now() + 120000 })
             });
 
-            // Store network reference for event subscription
             this.network = this.gateway.getNetwork(CHANNEL_NAME);
             this.contract = this.network.getContract(CHAINCODE_NAME);
 
@@ -176,9 +164,6 @@ class FabricClient {
         }
     }
 
-    /**
-     * Disconnect from the network
-     */
     async disconnect() {
         if (this.eventIterator) {
             try { this.eventIterator.close(); } catch (_) { /* ignore */ }
@@ -198,19 +183,9 @@ class FabricClient {
     getOrg() { return this.org; }
 
     // =========================================================================
-    // CHAINCODE EVENT SUBSCRIPTION (for ledger-driven SSE)
+    // CHAINCODE EVENT SUBSCRIPTION
     // =========================================================================
 
-    /**
-     * Subscribe to chaincode events from the ledger.
-     *
-     * @param {Function} callback  Called with (eventName: string, payload: object,
-     *                             transactionId: string, blockNumber: bigint)
-     *                             for every committed chaincode event.
-     *
-     * This runs an async loop that never returns (until disconnect or error).
-     * It should be called once at startup and left running.
-     */
     async subscribeToEvents(callback) {
         if (!this.connected || !this.network) {
             throw new Error('Must connect() before subscribing to events');
@@ -218,16 +193,12 @@ class FabricClient {
 
         logger.info(`[${this.org}] Subscribing to chaincode events on '${CHAINCODE_NAME}'...`);
 
-        const startBlock = BigInt(0);   // Start from latest committed; 0 = don't replay
-
-        // getChaincodeEvents returns a CloseableAsyncIterable<ChaincodeEvent>
         this.eventIterator = await this.network.getChaincodeEvents(CHAINCODE_NAME, {
-            startBlock: undefined  // undefined = start from next committed block
+            startBlock: undefined
         });
 
         logger.info(`[${this.org}] ✓ Chaincode event subscription active`);
 
-        // Process events forever (until close/disconnect)
         (async () => {
             try {
                 for await (const event of this.eventIterator) {
@@ -246,7 +217,6 @@ class FabricClient {
                     }
                 }
             } catch (err) {
-                // gRPC stream closed or network error
                 if (this.connected) {
                     logger.error(`[${this.org}] Chaincode event stream error: ${err.message}`);
                 }
@@ -366,12 +336,12 @@ class FabricClient {
     }
 
     // =========================================================================
-    // ANNOTATION CHAINCODE TRANSACTION METHODS (v2.0)
+    // ANNOTATION CHAINCODE TRANSACTION METHODS (v2.1: intentType added)
     // =========================================================================
 
-    async proposeAnnotation(assetId, contentText, tier, classContext, generatorId, promptHash) {
+    async proposeAnnotation(assetId, contentText, tier, classContext, generatorId, promptHash, intentType) {
         if (!this.connected) throw new Error('Not connected to Fabric network');
-        logger.info(`[${this.org}] ProposeAnnotation: ${assetId} (tier=${tier})`);
+        logger.info(`[${this.org}] ProposeAnnotation: ${assetId} (tier=${tier}, intentType=${intentType})`);
         const result = await this.contract.submitTransaction(
             'ProposeAnnotation',
             assetId,
@@ -379,45 +349,46 @@ class FabricClient {
             tier,
             JSON.stringify(classContext),
             generatorId,
-            promptHash
+            promptHash,
+            intentType
         );
         return resultToJson(result);
     }
 
-    async endorseAnnotation(assetId) {
+    async endorseAnnotation(assetId, intentType) {
         if (!this.connected) throw new Error('Not connected to Fabric network');
-        logger.info(`[${this.org}] EndorseAnnotation: ${assetId}`);
-        const result = await this.contract.submitTransaction('EndorseAnnotation', assetId);
+        logger.info(`[${this.org}] EndorseAnnotation: ${assetId}:${intentType}`);
+        const result = await this.contract.submitTransaction('EndorseAnnotation', assetId, intentType);
         return resultToJson(result);
     }
 
-    async rejectAnnotation(assetId, reason) {
+    async rejectAnnotation(assetId, intentType, reason) {
         if (!this.connected) throw new Error('Not connected to Fabric network');
-        logger.info(`[${this.org}] RejectAnnotation: ${assetId}`);
-        const result = await this.contract.submitTransaction('RejectAnnotation', assetId, reason || '');
+        logger.info(`[${this.org}] RejectAnnotation: ${assetId}:${intentType}`);
+        const result = await this.contract.submitTransaction('RejectAnnotation', assetId, intentType, reason || '');
         return resultToJson(result);
     }
 
-    async revokeAnnotation(assetId, reason) {
+    async revokeAnnotation(assetId, intentType, reason) {
         if (!this.connected) throw new Error('Not connected to Fabric network');
-        logger.info(`[${this.org}] RevokeAnnotation: ${assetId}`);
-        const result = await this.contract.submitTransaction('RevokeAnnotation', assetId, reason || '');
+        logger.info(`[${this.org}] RevokeAnnotation: ${assetId}:${intentType}`);
+        const result = await this.contract.submitTransaction('RevokeAnnotation', assetId, intentType, reason || '');
         return resultToJson(result);
     }
 
     // =========================================================================
-    // ANNOTATION QUERY METHODS (v2.0)
+    // ANNOTATION QUERY METHODS (v2.1: intentType added)
     // =========================================================================
 
-    async getAnnotation(assetId) {
+    async getAnnotation(assetId, intentType) {
         if (!this.connected) throw new Error('Not connected to Fabric network');
-        const result = await this.contract.evaluateTransaction('GetAnnotation', assetId);
+        const result = await this.contract.evaluateTransaction('GetAnnotation', assetId, intentType);
         return resultToJson(result);
     }
 
-    async getActiveAnnotation(assetId) {
+    async getActiveAnnotation(assetId, intentType) {
         if (!this.connected) throw new Error('Not connected to Fabric network');
-        const result = await this.contract.evaluateTransaction('GetActiveAnnotation', assetId);
+        const result = await this.contract.evaluateTransaction('GetActiveAnnotation', assetId, intentType);
         return resultToJson(result);
     }
 
@@ -429,9 +400,17 @@ class FabricClient {
         return parsed;
     }
 
-    async getAnnotationHistory(assetId) {
+    async getActiveAnnotationsForAsset(assetId) {
         if (!this.connected) throw new Error('Not connected to Fabric network');
-        const result = await this.contract.evaluateTransaction('GetAnnotationHistory', assetId);
+        const result = await this.contract.evaluateTransaction('GetActiveAnnotationsForAsset', assetId);
+        const parsed = resultToJson(result);
+        if (!parsed) return { assetId, annotations: [], count: 0 };
+        return parsed;
+    }
+
+    async getAnnotationHistory(assetId, intentType) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        const result = await this.contract.evaluateTransaction('GetAnnotationHistory', assetId, intentType);
         const parsed = resultToJson(result);
         if (!parsed) return { history: [], count: 0 };
         return parsed;

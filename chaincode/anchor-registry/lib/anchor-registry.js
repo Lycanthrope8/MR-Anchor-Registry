@@ -24,11 +24,13 @@
  * - REVOKE_PENDING: Revocation initiated, awaiting other org
  * - REVOKED: Anchor revoked and deleted
  *
- * EXTENSION: Governed Object Annotations (v2.0)
+ * EXTENSION: Governed Object Annotations (v2.1 — Multi-Card)
  * - ADVISORY tier: auto-approve, 0 endorsements
  * - GOVERNED tier: dual endorsement required (same as anchors)
  * - Annotations bind to active governed anchors via anchorClaimId
- * - One active annotation per asset at a time
+ * - ONE annotation per (assetId, intentType) pair
+ * - Multiple intent types per asset → multiple cards
+ * - Valid intent types: ASK_ANCHOR, ACTION_SUGGEST
  * - Content text stored on-chain (max 280 characters)
  * ==============================================================================
  */
@@ -60,6 +62,11 @@ const ANN_TIER_ADVISORY = 'ADVISORY';
 const ANN_TIER_GOVERNED = 'GOVERNED';
 const VALID_ANN_TIERS = [ANN_TIER_ADVISORY, ANN_TIER_GOVERNED];
 
+// Intent Types (v2.1 multi-card)
+const INTENT_ASK_ANCHOR = 'ASK_ANCHOR';
+const INTENT_ACTION_SUGGEST = 'ACTION_SUGGEST';
+const VALID_INTENT_TYPES = [INTENT_ASK_ANCHOR, INTENT_ACTION_SUGGEST];
+
 // Annotation Content Limit (characters)
 const ANN_MAX_CONTENT_LENGTH = 280;
 
@@ -69,7 +76,7 @@ const PREFIX_ANCHOR_ACTIVE = 'ANCHOR_ACTIVE::';
 const PREFIX_EVENT = 'EVENT::';
 const PREFIX_REVOKE_REQUEST = 'REVOKE_REQUEST::';
 
-// Key Prefixes - Annotations
+// Key Prefixes - Annotations (v2.1: keys are now assetId:intentType)
 const PREFIX_ANNOTATION = 'ANNOTATION::';
 const PREFIX_ANNOTATION_ACTIVE = 'ANN_ACTIVE::';
 
@@ -87,6 +94,7 @@ class AnchorRegistryContract extends Contract {
         console.log('Dual Endorsement Model - Both Org1 AND Org2 must endorse');
         console.log('Event IDs use TxID (no global counter)');
         console.log('Annotation support: ADVISORY (auto-approve) + GOVERNED (dual endorse)');
+        console.log('Multi-card model: one annotation per (assetId, intentType)');
         
         const txTimestamp = ctx.stub.getTxTimestamp();
         const timestamp = new Date(txTimestamp.seconds.toNumber() * 1000).toISOString();
@@ -98,6 +106,7 @@ class AnchorRegistryContract extends Contract {
             model: 'dual-endorsement',
             requiredEndorsers: ['Org1MSP', 'Org2MSP'],
             annotationTiers: ['ADVISORY', 'GOVERNED'],
+            intentTypes: VALID_INTENT_TYPES,
             annotationMaxContentLength: ANN_MAX_CONTENT_LENGTH
         };
         
@@ -105,35 +114,28 @@ class AnchorRegistryContract extends Contract {
         await ctx.stub.putState(`${PREFIX_EVENT}${eventId}`, Buffer.from(JSON.stringify(initEvent)));
         
         console.log('============= END : Initialize Ledger ===========');
-        return JSON.stringify({ success: true, message: 'Ledger initialized with dual endorsement model and annotation support' });
+        return JSON.stringify({ success: true, message: 'Ledger initialized with dual endorsement model and multi-card annotation support' });
     }
 
     // ==========================================================================
     // CLAIM LIFECYCLE - PROPOSE
     // ==========================================================================
 
-    /**
-     * ProposeAnchor - Submit a new anchor claim
-     * The proposal is signed by one org but requires BOTH orgs to explicitly endorse
-     */
     async ProposeAnchor(ctx, assetId, poseSiteJson, qualityMetricsJson) {
         console.log(`============= START : ProposeAnchor for ${assetId} ===========`);
         
         const signingMspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(signingMspId);
         
-        // Parse inputs
         const poseSite = JSON.parse(poseSiteJson);
         const qualityMetrics = JSON.parse(qualityMetricsJson);
         
-        // Check for existing active anchor
         const existingAnchorKey = `${PREFIX_ANCHOR_ACTIVE}${assetId}`;
         const existingAnchor = await ctx.stub.getState(existingAnchorKey);
         if (existingAnchor && existingAnchor.length > 0) {
             throw new Error(`Active anchor already exists for asset ${assetId}`);
         }
         
-        // Check for existing pending claim
         const existingClaimKey = `${PREFIX_CLAIM}${assetId}`;
         const existingClaim = await ctx.stub.getState(existingClaimKey);
         if (existingClaim && existingClaim.length > 0) {
@@ -146,11 +148,9 @@ class AnchorRegistryContract extends Contract {
             }
         }
         
-        // Generate claim ID
         const claimId = this._generateClaimId(assetId, signingMspId);
         const timestamp = new Date().toISOString();
         
-        // Create payload hash for integrity
         const payloadHash = this._hashPayload({
             assetId,
             poseSite,
@@ -158,7 +158,6 @@ class AnchorRegistryContract extends Contract {
             timestamp
         });
         
-        // Create claim object with DUAL ENDORSEMENT tracking
         const claim = {
             claimId,
             assetId,
@@ -166,26 +165,16 @@ class AnchorRegistryContract extends Contract {
             poseSite,
             qualityMetrics,
             payloadHash,
-            
-            // Proposal info
-            proposedViaOrg: signingMspId,  // Which org's credentials were used to submit
+            proposedViaOrg: signingMspId,
             proposedAt: timestamp,
-            
-            // DUAL ENDORSEMENT: Both must be true for ACTIVE
             endorsements: {
                 Org1MSP: false,
                 Org2MSP: false
             },
-            
-            // Timestamps for each endorsement
             endorsedOrg1At: null,
             endorsedOrg2At: null,
             activatedAt: null,
-            
-            // Track who rejected (if any)
             rejections: [],
-            
-            // Full history
             history: [{
                 action: 'PROPOSED',
                 by: signingMspId,
@@ -194,10 +183,8 @@ class AnchorRegistryContract extends Contract {
             }]
         };
         
-        // Store claim
         await ctx.stub.putState(existingClaimKey, Buffer.from(JSON.stringify(claim)));
         
-        // Emit event
         const eventId = this._emitEvent(ctx, 'CLAIM_PROPOSED', {
             claimId,
             assetId,
@@ -223,17 +210,12 @@ class AnchorRegistryContract extends Contract {
     // CLAIM LIFECYCLE - ENDORSE (Dual Endorsement)
     // ==========================================================================
 
-    /**
-     * EndorseClaim - Add this organization's endorsement
-     * Claim becomes ACTIVE only when BOTH Org1 AND Org2 have endorsed
-     */
     async EndorseClaim(ctx, assetId) {
         console.log(`============= START : EndorseClaim for ${assetId} ===========`);
         
         const mspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(mspId);
         
-        // Get existing claim
         const claimKey = `${PREFIX_CLAIM}${assetId}`;
         const claimData = await ctx.stub.getState(claimKey);
         if (!claimData || claimData.length === 0) {
@@ -242,20 +224,17 @@ class AnchorRegistryContract extends Contract {
         
         const claim = JSON.parse(claimData.toString());
         
-        // Validate state allows endorsement
         const validStates = [STATE_PROPOSED, STATE_ENDORSED_ORG1, STATE_ENDORSED_ORG2];
         if (!validStates.includes(claim.state)) {
             throw new Error(`Claim is in state ${claim.state}, cannot endorse. Valid states: ${validStates.join(', ')}`);
         }
         
-        // Check if this org already endorsed
         if (claim.endorsements[mspId] === true) {
             throw new Error(`${mspId} has already endorsed this claim`);
         }
         
         const timestamp = new Date().toISOString();
         
-        // Record this org's endorsement
         claim.endorsements[mspId] = true;
         
         if (mspId === 'Org1MSP') {
@@ -264,7 +243,6 @@ class AnchorRegistryContract extends Contract {
             claim.endorsedOrg2At = timestamp;
         }
         
-        // Add to history
         claim.history.push({
             action: 'ENDORSED',
             by: mspId,
@@ -274,9 +252,7 @@ class AnchorRegistryContract extends Contract {
         let eventType;
         let eventData;
         
-        // Check if BOTH orgs have now endorsed
         if (claim.endorsements.Org1MSP && claim.endorsements.Org2MSP) {
-            // BOTH endorsed - ACTIVATE!
             claim.state = STATE_ACTIVE;
             claim.activatedAt = timestamp;
             
@@ -287,7 +263,6 @@ class AnchorRegistryContract extends Contract {
                 note: 'Both Org1 and Org2 have endorsed'
             });
             
-            // Create active anchor entry
             const anchorKey = `${PREFIX_ANCHOR_ACTIVE}${assetId}`;
             const activeAnchor = {
                 assetId,
@@ -312,7 +287,6 @@ class AnchorRegistryContract extends Contract {
             console.log(`Claim ACTIVATED! Both orgs endorsed.`);
             
         } else {
-            // Only one org has endorsed - update state accordingly
             if (mspId === 'Org1MSP') {
                 claim.state = STATE_ENDORSED_ORG1;
                 eventType = 'CLAIM_ENDORSED_ORG1';
@@ -333,10 +307,8 @@ class AnchorRegistryContract extends Contract {
             console.log(`${mspId} endorsed. Waiting for ${pendingOrg}...`);
         }
         
-        // Store updated claim
         await ctx.stub.putState(claimKey, Buffer.from(JSON.stringify(claim)));
         
-        // Emit event
         const eventId = this._emitEvent(ctx, eventType, eventData);
         
         console.log(`============= END : EndorseClaim ===========`);
@@ -356,16 +328,12 @@ class AnchorRegistryContract extends Contract {
     // CLAIM LIFECYCLE - REJECT
     // ==========================================================================
 
-    /**
-     * RejectClaim - Reject a pending claim (either org can reject)
-     */
     async RejectClaim(ctx, assetId, reason) {
         console.log(`============= START : RejectClaim for ${assetId} ===========`);
         
         const mspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(mspId);
         
-        // Get existing claim
         const claimKey = `${PREFIX_CLAIM}${assetId}`;
         const claimData = await ctx.stub.getState(claimKey);
         if (!claimData || claimData.length === 0) {
@@ -374,7 +342,6 @@ class AnchorRegistryContract extends Contract {
         
         const claim = JSON.parse(claimData.toString());
         
-        // Validate state
         const validStates = [STATE_PROPOSED, STATE_ENDORSED_ORG1, STATE_ENDORSED_ORG2];
         if (!validStates.includes(claim.state)) {
             throw new Error(`Claim is in state ${claim.state}, cannot reject`);
@@ -382,7 +349,6 @@ class AnchorRegistryContract extends Contract {
         
         const timestamp = new Date().toISOString();
         
-        // Update claim
         claim.state = STATE_REJECTED;
         claim.rejectedBy = mspId;
         claim.rejectedAt = timestamp;
@@ -399,10 +365,8 @@ class AnchorRegistryContract extends Contract {
             reason: reason || 'No reason provided'
         });
         
-        // Store updated claim
         await ctx.stub.putState(claimKey, Buffer.from(JSON.stringify(claim)));
         
-        // Emit event
         const eventId = this._emitEvent(ctx, 'CLAIM_REJECTED', {
             claimId: claim.claimId,
             assetId,
@@ -426,16 +390,12 @@ class AnchorRegistryContract extends Contract {
     // REVOCATION LIFECYCLE
     // ==========================================================================
 
-    /**
-     * RevokeAnchor - Initiate revocation (requires other org to endorse)
-     */
     async RevokeAnchor(ctx, assetId, reason) {
         console.log(`============= START : RevokeAnchor for ${assetId} ===========`);
         
         const mspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(mspId);
         
-        // Get existing claim
         const claimKey = `${PREFIX_CLAIM}${assetId}`;
         const claimData = await ctx.stub.getState(claimKey);
         if (!claimData || claimData.length === 0) {
@@ -444,7 +404,6 @@ class AnchorRegistryContract extends Contract {
         
         const claim = JSON.parse(claimData.toString());
         
-        // Validate state
         if (claim.state !== STATE_ACTIVE) {
             throw new Error(`Claim must be ACTIVE to revoke. Current state: ${claim.state}`);
         }
@@ -452,7 +411,6 @@ class AnchorRegistryContract extends Contract {
         const timestamp = new Date().toISOString();
         const requiredEndorser = this._getOtherOrg(mspId);
         
-        // Update claim
         claim.state = STATE_REVOKE_PENDING;
         claim.revokeInitiatedBy = mspId;
         claim.revokeInitiatedAt = timestamp;
@@ -466,10 +424,8 @@ class AnchorRegistryContract extends Contract {
             requiredEndorser
         });
         
-        // Store updated claim
         await ctx.stub.putState(claimKey, Buffer.from(JSON.stringify(claim)));
         
-        // Store revoke request for easy querying
         const revokeKey = `${PREFIX_REVOKE_REQUEST}${assetId}`;
         const revokeRequest = {
             assetId,
@@ -482,7 +438,6 @@ class AnchorRegistryContract extends Contract {
         };
         await ctx.stub.putState(revokeKey, Buffer.from(JSON.stringify(revokeRequest)));
         
-        // Emit event
         const eventId = this._emitEvent(ctx, 'REVOKE_INITIATED', {
             claimId: claim.claimId,
             assetId,
@@ -504,16 +459,12 @@ class AnchorRegistryContract extends Contract {
         });
     }
 
-    /**
-     * EndorseRevoke - Endorse a pending revocation (completes the revocation)
-     */
     async EndorseRevoke(ctx, assetId) {
         console.log(`============= START : EndorseRevoke for ${assetId} ===========`);
         
         const mspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(mspId);
         
-        // Get existing claim
         const claimKey = `${PREFIX_CLAIM}${assetId}`;
         const claimData = await ctx.stub.getState(claimKey);
         if (!claimData || claimData.length === 0) {
@@ -522,19 +473,16 @@ class AnchorRegistryContract extends Contract {
         
         const claim = JSON.parse(claimData.toString());
         
-        // Validate state
         if (claim.state !== STATE_REVOKE_PENDING) {
             throw new Error(`Claim is not pending revocation. Current state: ${claim.state}`);
         }
         
-        // Validate endorser
         if (claim.revokeInitiatedBy === mspId) {
             throw new Error('Cannot endorse your own revocation request');
         }
         
         const timestamp = new Date().toISOString();
         
-        // Update claim
         claim.state = STATE_REVOKED;
         claim.revokeEndorsedBy = mspId;
         claim.revokeEndorsedAt = timestamp;
@@ -551,18 +499,14 @@ class AnchorRegistryContract extends Contract {
             note: `Revocation completed. Initiated by ${claim.revokeInitiatedBy}, endorsed by ${mspId}`
         });
         
-        // Store updated claim
         await ctx.stub.putState(claimKey, Buffer.from(JSON.stringify(claim)));
         
-        // Delete active anchor
         const anchorKey = `${PREFIX_ANCHOR_ACTIVE}${assetId}`;
         await ctx.stub.deleteState(anchorKey);
         
-        // Delete revoke request
         const revokeKey = `${PREFIX_REVOKE_REQUEST}${assetId}`;
         await ctx.stub.deleteState(revokeKey);
         
-        // Emit event
         const eventId = this._emitEvent(ctx, 'CLAIM_REVOKED', {
             claimId: claim.claimId,
             assetId,
@@ -584,16 +528,12 @@ class AnchorRegistryContract extends Contract {
         });
     }
 
-    /**
-     * RejectRevoke - Reject a pending revocation (keeps anchor active)
-     */
     async RejectRevoke(ctx, assetId, reason) {
         console.log(`============= START : RejectRevoke for ${assetId} ===========`);
         
         const mspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(mspId);
         
-        // Get existing claim
         const claimKey = `${PREFIX_CLAIM}${assetId}`;
         const claimData = await ctx.stub.getState(claimKey);
         if (!claimData || claimData.length === 0) {
@@ -602,19 +542,16 @@ class AnchorRegistryContract extends Contract {
         
         const claim = JSON.parse(claimData.toString());
         
-        // Validate state
         if (claim.state !== STATE_REVOKE_PENDING) {
             throw new Error(`Claim is not pending revocation. Current state: ${claim.state}`);
         }
         
-        // Validate rejector
         if (claim.revokeInitiatedBy === mspId) {
             throw new Error('Cannot reject your own revocation request');
         }
         
         const timestamp = new Date().toISOString();
         
-        // Update claim - revert to ACTIVE
         claim.state = STATE_ACTIVE;
         claim.revokeRejectedBy = mspId;
         claim.revokeRejectedAt = timestamp;
@@ -626,14 +563,11 @@ class AnchorRegistryContract extends Contract {
             reason: reason || 'No reason provided'
         });
         
-        // Store updated claim
         await ctx.stub.putState(claimKey, Buffer.from(JSON.stringify(claim)));
         
-        // Delete revoke request
         const revokeKey = `${PREFIX_REVOKE_REQUEST}${assetId}`;
         await ctx.stub.deleteState(revokeKey);
         
-        // Emit event
         const eventId = this._emitEvent(ctx, 'REVOKE_REJECTED', {
             claimId: claim.claimId,
             assetId,
@@ -661,9 +595,6 @@ class AnchorRegistryContract extends Contract {
     // ANCHOR QUERY FUNCTIONS
     // ==========================================================================
 
-    /**
-     * GetClaim - Get claim details
-     */
     async GetClaim(ctx, assetId) {
         const claimKey = `${PREFIX_CLAIM}${assetId}`;
         const claimData = await ctx.stub.getState(claimKey);
@@ -673,9 +604,6 @@ class AnchorRegistryContract extends Contract {
         return claimData.toString();
     }
 
-    /**
-     * GetActiveAnchor - Get active anchor for asset
-     */
     async GetActiveAnchor(ctx, assetId) {
         const anchorKey = `${PREFIX_ANCHOR_ACTIVE}${assetId}`;
         const anchorData = await ctx.stub.getState(anchorKey);
@@ -687,9 +615,6 @@ class AnchorRegistryContract extends Contract {
         return JSON.stringify(anchor);
     }
 
-    /**
-     * GetAllActiveAnchors - Get all active anchors
-     */
     async GetAllActiveAnchors(ctx) {
         const iterator = await ctx.stub.getStateByRange(PREFIX_ANCHOR_ACTIVE, PREFIX_ANCHOR_ACTIVE + '\uffff');
         const anchors = [];
@@ -707,9 +632,6 @@ class AnchorRegistryContract extends Contract {
         return JSON.stringify({ anchors, count: anchors.length });
     }
 
-    /**
-     * GetPendingRevocations - Get all pending revocation requests
-     */
     async GetPendingRevocations(ctx) {
         const iterator = await ctx.stub.getStateByRange(PREFIX_REVOKE_REQUEST, PREFIX_REVOKE_REQUEST + '\uffff');
         const pending = [];
@@ -729,9 +651,6 @@ class AnchorRegistryContract extends Contract {
         return JSON.stringify({ pendingRevocations: pending, count: pending.length });
     }
 
-    /**
-     * GetPendingRevocationsForOrg - Get pending revocations that require this org's action
-     */
     async GetPendingRevocationsForOrg(ctx) {
         const mspId = ctx.clientIdentity.getMSPID();
         const iterator = await ctx.stub.getStateByRange(PREFIX_REVOKE_REQUEST, PREFIX_REVOKE_REQUEST + '\uffff');
@@ -758,7 +677,7 @@ class AnchorRegistryContract extends Contract {
 
     /**
      * GetSnapshot - Get current state snapshot for SSE clients
-     * EXTENDED: Now includes active annotations alongside claims
+     * v2.1: annotations now include intentType field
      */
     async GetSnapshot(ctx) {
         // Get claims
@@ -783,7 +702,7 @@ class AnchorRegistryContract extends Contract {
         }
         await claimIterator.close();
 
-        // Get annotations
+        // Get annotations (v2.1: each annotation now has intentType)
         const annotations = [];
         const annIterator = await ctx.stub.getStateByRange(PREFIX_ANNOTATION, PREFIX_ANNOTATION + '\uffff');
         
@@ -794,6 +713,7 @@ class AnchorRegistryContract extends Contract {
                 annotations.push({
                     asset_id: ann.assetId,
                     annotation_id: ann.annotationId,
+                    intent_type: ann.intentType,
                     state: ann.state,
                     tier: ann.tier,
                     content_text: ann.contentText,
@@ -815,9 +735,6 @@ class AnchorRegistryContract extends Contract {
         });
     }
 
-    /**
-     * GetClaimHistory - Get full history for a claim
-     */
     async GetClaimHistory(ctx, assetId) {
         const claimKey = `${PREFIX_CLAIM}${assetId}`;
         const historyIterator = await ctx.stub.getHistoryForKey(claimKey);
@@ -844,21 +761,25 @@ class AnchorRegistryContract extends Contract {
     }
 
     // ==========================================================================
-    // ANNOTATION LIFECYCLE - PROPOSE
+    // ANNOTATION LIFECYCLE - PROPOSE (v2.1: intentType parameter added)
     // ==========================================================================
 
     /**
      * ProposeAnnotation - Submit an AI-generated annotation for a governed asset
      * 
+     * v2.1: intentType is now a required parameter.
+     * The composite key is ANNOTATION::assetId:intentType
+     * This allows one annotation per (assetId, intentType) pair.
+     * 
      * ADVISORY tier: auto-activates immediately (no endorsement needed)
      * GOVERNED tier: requires dual endorsement from both Org1 and Org2
      * 
      * Precondition: an ACTIVE anchor must exist for the assetId
-     * Constraint: one annotation per asset at a time
+     * Constraint: one annotation per (assetId, intentType) at a time
      * Constraint: contentText max 280 characters
      */
-    async ProposeAnnotation(ctx, assetId, contentText, tier, classContextJson, generatorId, promptHash) {
-        console.log(`============= START : ProposeAnnotation for ${assetId} (tier=${tier}) ===========`);
+    async ProposeAnnotation(ctx, assetId, contentText, tier, classContextJson, generatorId, promptHash, intentType) {
+        console.log(`============= START : ProposeAnnotation for ${assetId} (tier=${tier}, intentType=${intentType}) ===========`);
         
         const signingMspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(signingMspId);
@@ -866,6 +787,11 @@ class AnchorRegistryContract extends Contract {
         // Validate tier
         if (!VALID_ANN_TIERS.includes(tier)) {
             throw new Error(`Invalid annotation tier: ${tier}. Must be one of: ${VALID_ANN_TIERS.join(', ')}`);
+        }
+        
+        // Validate intentType (v2.1)
+        if (!intentType || !VALID_INTENT_TYPES.includes(intentType)) {
+            throw new Error(`Invalid or missing intentType: ${intentType}. Must be one of: ${VALID_INTENT_TYPES.join(', ')}`);
         }
         
         // Validate content text length
@@ -876,7 +802,7 @@ class AnchorRegistryContract extends Contract {
             throw new Error(`Annotation contentText exceeds ${ANN_MAX_CONTENT_LENGTH} character limit (got ${contentText.length})`);
         }
         
-        // Verify an ACTIVE anchor exists for this asset (annotations bind to governed assets)
+        // Verify an ACTIVE anchor exists for this asset
         const anchorKey = `${PREFIX_ANCHOR_ACTIVE}${assetId}`;
         const anchorData = await ctx.stub.getState(anchorKey);
         if (!anchorData || anchorData.length === 0) {
@@ -884,8 +810,11 @@ class AnchorRegistryContract extends Contract {
         }
         const activeAnchor = JSON.parse(anchorData.toString());
         
-        // Check for existing pending or active annotation (one per asset at a time)
-        const existingAnnKey = `${PREFIX_ANNOTATION}${assetId}`;
+        // v2.1: Composite key is assetId:intentType
+        const annCompositeKey = `${assetId}:${intentType}`;
+        
+        // Check for existing pending or active annotation for this (asset, intentType) pair
+        const existingAnnKey = `${PREFIX_ANNOTATION}${annCompositeKey}`;
         const existingAnn = await ctx.stub.getState(existingAnnKey);
         if (existingAnn && existingAnn.length > 0) {
             const ann = JSON.parse(existingAnn.toString());
@@ -893,15 +822,16 @@ class AnchorRegistryContract extends Contract {
                 ann.state === ANN_STATE_ENDORSED_ORG1 || 
                 ann.state === ANN_STATE_ENDORSED_ORG2 ||
                 ann.state === ANN_STATE_ACTIVE) {
-                throw new Error(`Annotation already exists for asset ${assetId} (state: ${ann.state}). Revoke the existing annotation first.`);
+                throw new Error(`Annotation already exists for asset ${assetId} with intentType ${intentType} (state: ${ann.state}). Revoke the existing annotation first.`);
             }
         }
         
         // Parse class context
         const classContext = JSON.parse(classContextJson);
         
-        // Generate annotation ID and content hash
-        const annotationId = this._generateAnnotationId(assetId, signingMspId);
+        // Generate annotation ID and content hash (v2.1: deterministic from assetId:intentType:txId)
+        const txId = ctx.stub.getTxID();
+        const annotationId = this._generateAnnotationId(assetId, intentType, txId);
         const contentHash = this._hashPayload({ contentText });
         const timestamp = new Date().toISOString();
         
@@ -909,10 +839,11 @@ class AnchorRegistryContract extends Contract {
         const annotation = {
             annotationId,
             assetId,
-            anchorClaimId: activeAnchor.claimId,    // provenance: which anchor claim
+            intentType,                              // v2.1: intent type stored on-chain
+            anchorClaimId: activeAnchor.claimId,
             tier,
             state: ANN_STATE_PROPOSED,
-            contentText,                             // stored on-chain (max 280 chars)
+            contentText,
             contentHash,
             classContext,
             generatorId: generatorId || 'unknown',
@@ -936,7 +867,8 @@ class AnchorRegistryContract extends Contract {
                 action: 'ANN_PROPOSED',
                 by: signingMspId,
                 at: timestamp,
-                tier: tier
+                tier: tier,
+                intentType: intentType
             }]
         };
         
@@ -957,13 +889,16 @@ class AnchorRegistryContract extends Contract {
                 note: 'ADVISORY tier: auto-approved without endorsement'
             });
             
-            // Write to active annotations prefix
-            const activeAnnKey = `${PREFIX_ANNOTATION_ACTIVE}${assetId}`;
+            // Write to active annotations prefix (v2.1: composite key, includes provenance)
+            const activeAnnKey = `${PREFIX_ANNOTATION_ACTIVE}${annCompositeKey}`;
             await ctx.stub.putState(activeAnnKey, Buffer.from(JSON.stringify({
                 assetId,
                 annotationId,
+                intentType,
                 tier,
                 contentText,
+                generatorId,
+                promptHash: promptHash || 'unknown',
                 activatedAt: timestamp
             })));
             
@@ -971,28 +906,30 @@ class AnchorRegistryContract extends Contract {
             this._emitEvent(ctx, 'ANNOTATION_ACTIVE', {
                 annotationId,
                 assetId,
+                intentType,
                 tier,
                 contentText,
                 activationMethod: 'AUTO_APPROVE',
                 anchorClaimId: activeAnchor.claimId
             });
             
-            console.log(`ADVISORY annotation auto-activated for ${assetId}`);
+            console.log(`ADVISORY annotation auto-activated for ${assetId}:${intentType}`);
         } else {
             // GOVERNED tier: emit PROPOSED, wait for dual endorsement
             this._emitEvent(ctx, 'ANNOTATION_PROPOSED', {
                 annotationId,
                 assetId,
+                intentType,
                 tier,
                 contentText,
                 proposedViaOrg: signingMspId,
                 requiredEndorsements: ['Org1MSP', 'Org2MSP']
             });
             
-            console.log(`GOVERNED annotation proposed for ${assetId}, awaiting dual endorsement`);
+            console.log(`GOVERNED annotation proposed for ${assetId}:${intentType}, awaiting dual endorsement`);
         }
         
-        // Store annotation
+        // Store annotation (v2.1: composite key)
         await ctx.stub.putState(existingAnnKey, Buffer.from(JSON.stringify(annotation)));
         
         console.log(`============= END : ProposeAnnotation - annotationId: ${annotationId} ===========`);
@@ -1001,6 +938,7 @@ class AnchorRegistryContract extends Contract {
             success: true,
             annotation_id: annotationId,
             asset_id: assetId,
+            intent_type: intentType,
             state: annotation.state,
             tier,
             content_text: contentText,
@@ -1011,42 +949,40 @@ class AnchorRegistryContract extends Contract {
     }
 
     // ==========================================================================
-    // ANNOTATION LIFECYCLE - ENDORSE (Dual Endorsement for GOVERNED tier)
+    // ANNOTATION LIFECYCLE - ENDORSE (v2.1: intentType parameter added)
     // ==========================================================================
 
-    /**
-     * EndorseAnnotation - Add this organization's endorsement to a GOVERNED annotation
-     * Annotation becomes ANN_ACTIVE only when BOTH Org1 AND Org2 have endorsed
-     */
-    async EndorseAnnotation(ctx, assetId) {
-        console.log(`============= START : EndorseAnnotation for ${assetId} ===========`);
+    async EndorseAnnotation(ctx, assetId, intentType) {
+        console.log(`============= START : EndorseAnnotation for ${assetId}:${intentType} ===========`);
         
         const mspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(mspId);
         
-        // Get existing annotation
-        const annKey = `${PREFIX_ANNOTATION}${assetId}`;
+        // Validate intentType
+        if (!intentType || !VALID_INTENT_TYPES.includes(intentType)) {
+            throw new Error(`Invalid or missing intentType: ${intentType}. Must be one of: ${VALID_INTENT_TYPES.join(', ')}`);
+        }
+        
+        const annCompositeKey = `${assetId}:${intentType}`;
+        const annKey = `${PREFIX_ANNOTATION}${annCompositeKey}`;
         const annData = await ctx.stub.getState(annKey);
         if (!annData || annData.length === 0) {
-            throw new Error(`No annotation found for asset ${assetId}`);
+            throw new Error(`No annotation found for asset ${assetId} with intentType ${intentType}`);
         }
         
         const annotation = JSON.parse(annData.toString());
         
-        // Validate state allows endorsement
         const validStates = [ANN_STATE_PROPOSED, ANN_STATE_ENDORSED_ORG1, ANN_STATE_ENDORSED_ORG2];
         if (!validStates.includes(annotation.state)) {
             throw new Error(`Annotation is in state ${annotation.state}, cannot endorse. Valid states: ${validStates.join(', ')}`);
         }
         
-        // Check if this org already endorsed
         if (annotation.endorsements[mspId] === true) {
             throw new Error(`${mspId} has already endorsed this annotation`);
         }
         
         const timestamp = new Date().toISOString();
         
-        // Record this org's endorsement
         annotation.endorsements[mspId] = true;
         
         if (mspId === 'Org1MSP') {
@@ -1064,9 +1000,7 @@ class AnchorRegistryContract extends Contract {
         let eventType;
         let eventData;
         
-        // Check if BOTH orgs have now endorsed
         if (annotation.endorsements.Org1MSP && annotation.endorsements.Org2MSP) {
-            // BOTH endorsed - ACTIVATE!
             annotation.state = ANN_STATE_ACTIVE;
             annotation.activatedAt = timestamp;
             annotation.activationMethod = 'DUAL_ENDORSEMENT';
@@ -1078,13 +1012,15 @@ class AnchorRegistryContract extends Contract {
                 note: 'Both Org1 and Org2 have endorsed'
             });
             
-            // Write to active annotations prefix
-            const activeAnnKey = `${PREFIX_ANNOTATION_ACTIVE}${assetId}`;
+            const activeAnnKey = `${PREFIX_ANNOTATION_ACTIVE}${annCompositeKey}`;
             await ctx.stub.putState(activeAnnKey, Buffer.from(JSON.stringify({
                 assetId,
                 annotationId: annotation.annotationId,
+                intentType,
                 tier: annotation.tier,
                 contentText: annotation.contentText,
+                generatorId: annotation.generatorId,
+                promptHash: annotation.promptHash || 'unknown',
                 activatedAt: timestamp
             })));
             
@@ -1092,6 +1028,7 @@ class AnchorRegistryContract extends Contract {
             eventData = {
                 annotationId: annotation.annotationId,
                 assetId,
+                intentType,
                 tier: annotation.tier,
                 contentText: annotation.contentText,
                 finalEndorser: mspId,
@@ -1100,10 +1037,9 @@ class AnchorRegistryContract extends Contract {
                 activatedAt: timestamp
             };
             
-            console.log(`Annotation ACTIVATED! Both orgs endorsed.`);
+            console.log(`Annotation ACTIVATED! Both orgs endorsed. (${assetId}:${intentType})`);
             
         } else {
-            // Only one org has endorsed
             if (mspId === 'Org1MSP') {
                 annotation.state = ANN_STATE_ENDORSED_ORG1;
                 eventType = 'ANNOTATION_ENDORSED_ORG1';
@@ -1116,18 +1052,17 @@ class AnchorRegistryContract extends Contract {
             eventData = {
                 annotationId: annotation.annotationId,
                 assetId,
+                intentType,
                 endorsedBy: mspId,
                 pendingEndorser: pendingOrg,
                 endorsements: annotation.endorsements
             };
             
-            console.log(`${mspId} endorsed annotation. Waiting for ${pendingOrg}...`);
+            console.log(`${mspId} endorsed annotation. Waiting for ${pendingOrg}... (${assetId}:${intentType})`);
         }
         
-        // Store updated annotation
         await ctx.stub.putState(annKey, Buffer.from(JSON.stringify(annotation)));
         
-        // Emit event
         const eventId = this._emitEvent(ctx, eventType, eventData);
         
         console.log(`============= END : EndorseAnnotation ===========`);
@@ -1136,6 +1071,7 @@ class AnchorRegistryContract extends Contract {
             success: true,
             annotation_id: annotation.annotationId,
             asset_id: assetId,
+            intent_type: intentType,
             state: annotation.state,
             endorsed_by: mspId,
             endorsements: annotation.endorsements,
@@ -1145,27 +1081,28 @@ class AnchorRegistryContract extends Contract {
     }
 
     // ==========================================================================
-    // ANNOTATION LIFECYCLE - REJECT
+    // ANNOTATION LIFECYCLE - REJECT (v2.1: intentType parameter added)
     // ==========================================================================
 
-    /**
-     * RejectAnnotation - Reject a pending annotation (either org can reject)
-     */
-    async RejectAnnotation(ctx, assetId, reason) {
-        console.log(`============= START : RejectAnnotation for ${assetId} ===========`);
+    async RejectAnnotation(ctx, assetId, intentType, reason) {
+        console.log(`============= START : RejectAnnotation for ${assetId}:${intentType} ===========`);
         
         const mspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(mspId);
         
-        const annKey = `${PREFIX_ANNOTATION}${assetId}`;
+        if (!intentType || !VALID_INTENT_TYPES.includes(intentType)) {
+            throw new Error(`Invalid or missing intentType: ${intentType}. Must be one of: ${VALID_INTENT_TYPES.join(', ')}`);
+        }
+        
+        const annCompositeKey = `${assetId}:${intentType}`;
+        const annKey = `${PREFIX_ANNOTATION}${annCompositeKey}`;
         const annData = await ctx.stub.getState(annKey);
         if (!annData || annData.length === 0) {
-            throw new Error(`No annotation found for asset ${assetId}`);
+            throw new Error(`No annotation found for asset ${assetId} with intentType ${intentType}`);
         }
         
         const annotation = JSON.parse(annData.toString());
         
-        // Validate state
         const validStates = [ANN_STATE_PROPOSED, ANN_STATE_ENDORSED_ORG1, ANN_STATE_ENDORSED_ORG2];
         if (!validStates.includes(annotation.state)) {
             throw new Error(`Annotation is in state ${annotation.state}, cannot reject`);
@@ -1194,6 +1131,7 @@ class AnchorRegistryContract extends Contract {
         const eventId = this._emitEvent(ctx, 'ANNOTATION_REJECTED', {
             annotationId: annotation.annotationId,
             assetId,
+            intentType,
             rejectedBy: mspId,
             reason: reason || 'No reason provided'
         });
@@ -1204,6 +1142,7 @@ class AnchorRegistryContract extends Contract {
             success: true,
             annotation_id: annotation.annotationId,
             asset_id: assetId,
+            intent_type: intentType,
             state: ANN_STATE_REJECTED,
             rejected_by: mspId,
             reason: reason || 'No reason provided',
@@ -1212,25 +1151,24 @@ class AnchorRegistryContract extends Contract {
     }
 
     // ==========================================================================
-    // ANNOTATION LIFECYCLE - REVOKE (Simplified: single-org for prototype)
+    // ANNOTATION LIFECYCLE - REVOKE (v2.1: intentType parameter added)
     // ==========================================================================
 
-    /**
-     * RevokeAnnotation - Revoke an active annotation (either org can revoke)
-     * NOTE: Simplified single-org revoke for prototype. Does not require
-     * dual endorsement like anchor revocation. This is a documented
-     * prototype simplification.
-     */
-    async RevokeAnnotation(ctx, assetId, reason) {
-        console.log(`============= START : RevokeAnnotation for ${assetId} ===========`);
+    async RevokeAnnotation(ctx, assetId, intentType, reason) {
+        console.log(`============= START : RevokeAnnotation for ${assetId}:${intentType} ===========`);
         
         const mspId = ctx.clientIdentity.getMSPID();
         this._validateMSP(mspId);
         
-        const annKey = `${PREFIX_ANNOTATION}${assetId}`;
+        if (!intentType || !VALID_INTENT_TYPES.includes(intentType)) {
+            throw new Error(`Invalid or missing intentType: ${intentType}. Must be one of: ${VALID_INTENT_TYPES.join(', ')}`);
+        }
+        
+        const annCompositeKey = `${assetId}:${intentType}`;
+        const annKey = `${PREFIX_ANNOTATION}${annCompositeKey}`;
         const annData = await ctx.stub.getState(annKey);
         if (!annData || annData.length === 0) {
-            throw new Error(`No annotation found for asset ${assetId}`);
+            throw new Error(`No annotation found for asset ${assetId} with intentType ${intentType}`);
         }
         
         const annotation = JSON.parse(annData.toString());
@@ -1255,12 +1193,13 @@ class AnchorRegistryContract extends Contract {
         await ctx.stub.putState(annKey, Buffer.from(JSON.stringify(annotation)));
         
         // Delete from active annotations
-        const activeAnnKey = `${PREFIX_ANNOTATION_ACTIVE}${assetId}`;
+        const activeAnnKey = `${PREFIX_ANNOTATION_ACTIVE}${annCompositeKey}`;
         await ctx.stub.deleteState(activeAnnKey);
         
         const eventId = this._emitEvent(ctx, 'ANNOTATION_REVOKED', {
             annotationId: annotation.annotationId,
             assetId,
+            intentType,
             revokedBy: mspId,
             reason: reason || 'No reason provided'
         });
@@ -1271,6 +1210,7 @@ class AnchorRegistryContract extends Contract {
             success: true,
             annotation_id: annotation.annotationId,
             asset_id: assetId,
+            intent_type: intentType,
             state: ANN_STATE_REVOKED,
             revoked_by: mspId,
             reason: reason || 'No reason provided',
@@ -1279,40 +1219,39 @@ class AnchorRegistryContract extends Contract {
     }
 
     // ==========================================================================
-    // ANNOTATION QUERY FUNCTIONS
+    // ANNOTATION QUERY FUNCTIONS (v2.1: intentType parameter added)
     // ==========================================================================
 
-    /**
-     * GetAnnotation - Get full annotation record for an asset
-     */
-    async GetAnnotation(ctx, assetId) {
-        const annKey = `${PREFIX_ANNOTATION}${assetId}`;
+    async GetAnnotation(ctx, assetId, intentType) {
+        if (!intentType || !VALID_INTENT_TYPES.includes(intentType)) {
+            throw new Error(`Invalid or missing intentType: ${intentType}. Must be one of: ${VALID_INTENT_TYPES.join(', ')}`);
+        }
+        const annCompositeKey = `${assetId}:${intentType}`;
+        const annKey = `${PREFIX_ANNOTATION}${annCompositeKey}`;
         const annData = await ctx.stub.getState(annKey);
         if (!annData || annData.length === 0) {
-            return JSON.stringify({ found: false, assetId });
+            return JSON.stringify({ found: false, assetId, intentType });
         }
         const annotation = JSON.parse(annData.toString());
         annotation.found = true;
         return JSON.stringify(annotation);
     }
 
-    /**
-     * GetActiveAnnotation - Get the active annotation for an asset
-     */
-    async GetActiveAnnotation(ctx, assetId) {
-        const activeAnnKey = `${PREFIX_ANNOTATION_ACTIVE}${assetId}`;
+    async GetActiveAnnotation(ctx, assetId, intentType) {
+        if (!intentType || !VALID_INTENT_TYPES.includes(intentType)) {
+            throw new Error(`Invalid or missing intentType: ${intentType}. Must be one of: ${VALID_INTENT_TYPES.join(', ')}`);
+        }
+        const annCompositeKey = `${assetId}:${intentType}`;
+        const activeAnnKey = `${PREFIX_ANNOTATION_ACTIVE}${annCompositeKey}`;
         const annData = await ctx.stub.getState(activeAnnKey);
         if (!annData || annData.length === 0) {
-            return JSON.stringify({ found: false, assetId });
+            return JSON.stringify({ found: false, assetId, intentType });
         }
         const annotation = JSON.parse(annData.toString());
         annotation.found = true;
         return JSON.stringify(annotation);
     }
 
-    /**
-     * GetAllActiveAnnotations - Get all active annotations (for snapshot/reconnect)
-     */
     async GetAllActiveAnnotations(ctx) {
         const iterator = await ctx.stub.getStateByRange(PREFIX_ANNOTATION_ACTIVE, PREFIX_ANNOTATION_ACTIVE + '\uffff');
         const annotations = [];
@@ -1331,10 +1270,37 @@ class AnchorRegistryContract extends Contract {
     }
 
     /**
-     * GetAnnotationHistory - Get full ledger history for an annotation
+     * GetActiveAnnotationsForAsset — returns all active annotation cards for a given asset.
+     * Range query over ANN_ACTIVE::{assetId}: prefix to find both ASK_ANCHOR and ACTION_SUGGEST.
      */
-    async GetAnnotationHistory(ctx, assetId) {
-        const annKey = `${PREFIX_ANNOTATION}${assetId}`;
+    async GetActiveAnnotationsForAsset(ctx, assetId) {
+        if (!assetId) {
+            throw new Error('assetId is required');
+        }
+        const startKey = `${PREFIX_ANNOTATION_ACTIVE}${assetId}:`;
+        const endKey = `${PREFIX_ANNOTATION_ACTIVE}${assetId}:\uffff`;
+        const iterator = await ctx.stub.getStateByRange(startKey, endKey);
+        const annotations = [];
+        
+        let result = await iterator.next();
+        while (!result.done) {
+            if (result.value && result.value.value) {
+                const ann = JSON.parse(result.value.value.toString());
+                annotations.push(ann);
+            }
+            result = await iterator.next();
+        }
+        await iterator.close();
+        
+        return JSON.stringify({ assetId, annotations, count: annotations.length });
+    }
+
+    async GetAnnotationHistory(ctx, assetId, intentType) {
+        if (!intentType || !VALID_INTENT_TYPES.includes(intentType)) {
+            throw new Error(`Invalid or missing intentType: ${intentType}. Must be one of: ${VALID_INTENT_TYPES.join(', ')}`);
+        }
+        const annCompositeKey = `${assetId}:${intentType}`;
+        const annKey = `${PREFIX_ANNOTATION}${annCompositeKey}`;
         const historyIterator = await ctx.stub.getHistoryForKey(annKey);
         const history = [];
         
@@ -1355,7 +1321,7 @@ class AnchorRegistryContract extends Contract {
         }
         await historyIterator.close();
         
-        return JSON.stringify({ assetId, history });
+        return JSON.stringify({ assetId, intentType, history });
     }
 
     // ==========================================================================
@@ -1378,9 +1344,8 @@ class AnchorRegistryContract extends Contract {
         return 'claim_' + crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
     }
 
-    _generateAnnotationId(assetId, mspId) {
-        const timestamp = Date.now();
-        const data = `ann-${assetId}-${mspId}-${timestamp}`;
+    _generateAnnotationId(assetId, intentType, txId) {
+        const data = `${assetId}:${intentType}:${txId}`;
         return 'ann_' + crypto.createHash('sha256').update(data).digest('hex').substring(0, 16);
     }
 
@@ -1388,16 +1353,8 @@ class AnchorRegistryContract extends Contract {
         return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     }
 
-    /**
-     * Generate a conflict-free event ID using the Fabric TxID.
-     * Multiple events within the same tx get an in-memory suffix.
-     * NO ledger writes to any shared key — eliminates MVCC_READ_CONFLICT.
-     *
-     * NOTE: This is now a synchronous method (no await needed).
-     */
     _generateEventId(ctx) {
         const txId = ctx.stub.getTxID();
-        // Track per-tx suffix in a simple property on ctx (safe within one tx)
         if (!ctx._eventSuffix) {
             ctx._eventSuffix = 0;
         }
@@ -1405,13 +1362,6 @@ class AnchorRegistryContract extends Contract {
         return `${txId}:${ctx._eventSuffix}`;
     }
 
-    /**
-     * Emit a chaincode event and store an event record.
-     * Event record is keyed by TxID-based ID — no shared counter writes.
-     *
-     * NOTE: This is now a synchronous method (returns eventId, not a Promise).
-     * The putState for event storage is still async but we use the per-tx unique key.
-     */
     _emitEvent(ctx, eventType, data) {
         const eventId = this._generateEventId(ctx);
         const timestamp = new Date().toISOString();
@@ -1423,10 +1373,7 @@ class AnchorRegistryContract extends Contract {
             ...data
         };
         
-        // Store event for replay (keyed by txId-based ID, no contention)
         ctx.stub.putState(`${PREFIX_EVENT}${eventId}`, Buffer.from(JSON.stringify(event)));
-        
-        // Emit chaincode event
         ctx.stub.setEvent(eventType, Buffer.from(JSON.stringify(event)));
         
         return eventId;

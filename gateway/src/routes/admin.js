@@ -2,10 +2,7 @@
  * ==============================================================================
  * admin.js - Admin routes for web admin panels
  *
- * SSE broadcasts are no longer emitted here.  They are driven by Fabric
- * chaincode events (see events.js).
- *
- * v2.0: Added annotation admin routes (endorse, reject, revoke, list).
+ * v2.1: Annotation admin routes now require intent_type parameter.
  * ==============================================================================
  */
 
@@ -13,180 +10,86 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../services/logger');
 
-/**
- * Endorse a claim (admin version)
- * POST /admin/endorse-claim
- */
+// ─── Anchor Admin Routes (unchanged) ──────────────────────────────────────
+
 router.post('/endorse-claim', async (req, res) => {
     try {
         const { asset_id } = req.body;
-
-        if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
-        }
-
+        if (!asset_id) return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
         const fabricClient = req.fabricClient;
-        const orgId = req.orgId;
-        const mspId = fabricClient.getMspId();
-
-        logger.info(`[${orgId}] EndorseClaim: ${asset_id}`);
-
+        logger.info(`[${req.orgId}] EndorseClaim: ${asset_id}`);
         const result = await fabricClient.endorseClaim(asset_id);
-
-        logger.info(`Claim endorsed via admin: ${asset_id} by ${mspId}`);
-
-        // SSE events emitted by chaincode event listener, not here.
+        logger.info(`Claim endorsed via admin: ${asset_id} by ${fabricClient.getMspId()}`);
         res.json(result);
-
     } catch (error) {
         logger.error(`Admin endorse claim error: ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-/**
- * Reject a claim (admin version)
- * POST /admin/reject-claim
- */
 router.post('/reject-claim', async (req, res) => {
     try {
         const { asset_id, reason } = req.body;
-
-        if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
-        }
-
+        if (!asset_id) return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
         const fabricClient = req.fabricClient;
-        const orgId = req.orgId;
-        const mspId = fabricClient.getMspId();
-
-        logger.info(`[${orgId}] RejectClaim: ${asset_id}`);
-
+        logger.info(`[${req.orgId}] RejectClaim: ${asset_id}`);
         const result = await fabricClient.rejectClaim(asset_id, reason || '');
-
-        logger.info(`Claim rejected via admin: ${asset_id} by ${mspId}`);
-
+        logger.info(`Claim rejected via admin: ${asset_id} by ${fabricClient.getMspId()}`);
         res.json(result);
-
     } catch (error) {
         logger.error(`Admin reject claim error: ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-/**
- * Initiate anchor revocation
- * POST /admin/revoke
- */
 router.post('/revoke', async (req, res) => {
     try {
         const { asset_id, reason } = req.body;
-
-        if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
-        }
-
+        if (!asset_id) return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
         const fabricClient = req.fabricClient;
-        const orgId = req.orgId;
-        const mspId = fabricClient.getMspId();
-
-        logger.info(`[${orgId}] RevokeAnchor: ${asset_id}`);
-
+        logger.info(`[${req.orgId}] RevokeAnchor: ${asset_id}`);
         const result = await fabricClient.revokeAnchor(asset_id, reason || '');
-
-        logger.info(`Revocation initiated: ${asset_id} by ${mspId}`);
-
+        logger.info(`Revocation initiated: ${asset_id} by ${fabricClient.getMspId()}`);
         res.json(result);
-
     } catch (error) {
         logger.error(`Revoke anchor error: ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-/**
- * Endorse a pending revocation
- * POST /admin/endorse-revoke
- */
 router.post('/endorse-revoke', async (req, res) => {
     try {
         const { asset_id } = req.body;
-
-        if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
-        }
-
+        if (!asset_id) return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
         const fabricClient = req.fabricClient;
-        const orgId = req.orgId;
-        const mspId = fabricClient.getMspId();
-
-        logger.info(`[${orgId}] EndorseRevoke: ${asset_id}`);
-
+        logger.info(`[${req.orgId}] EndorseRevoke: ${asset_id}`);
         const result = await fabricClient.endorseRevoke(asset_id);
-
-        logger.info(`Revocation endorsed: ${asset_id} by ${mspId}`);
-
+        logger.info(`Revocation endorsed: ${asset_id} by ${fabricClient.getMspId()}`);
         res.json(result);
-
     } catch (error) {
         logger.error(`Endorse revoke error: ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-/**
- * Reject a pending revocation
- * POST /admin/reject-revoke
- */
 router.post('/reject-revoke', async (req, res) => {
     try {
         const { asset_id, reason } = req.body;
-
-        if (!asset_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required field: asset_id'
-            });
-        }
-
+        if (!asset_id) return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
         const fabricClient = req.fabricClient;
-        const orgId = req.orgId;
-        const mspId = fabricClient.getMspId();
-
-        logger.info(`[${orgId}] RejectRevoke: ${asset_id}`);
-
+        logger.info(`[${req.orgId}] RejectRevoke: ${asset_id}`);
         const result = await fabricClient.rejectRevoke(asset_id, reason || '');
-
-        logger.info(`Revocation rejected: ${asset_id} by ${mspId}`);
-
+        logger.info(`Revocation rejected: ${asset_id} by ${fabricClient.getMspId()}`);
         res.json(result);
-
     } catch (error) {
         logger.error(`Reject revoke error: ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-/**
- * Get all active anchors
- * GET /admin/anchors
- */
 router.get('/anchors', async (req, res) => {
     try {
-        const fabricClient = req.fabricClient;
-        const result = await fabricClient.getAllActiveAnchors();
+        const result = await req.fabricClient.getAllActiveAnchors();
         res.json(result);
     } catch (error) {
         logger.error(`Get all anchors error: ${error.message}`);
@@ -194,14 +97,9 @@ router.get('/anchors', async (req, res) => {
     }
 });
 
-/**
- * Get all pending revocations
- * GET /admin/pending-revocations
- */
 router.get('/pending-revocations', async (req, res) => {
     try {
-        const fabricClient = req.fabricClient;
-        const result = await fabricClient.getPendingRevocations();
+        const result = await req.fabricClient.getPendingRevocations();
         res.json(result);
     } catch (error) {
         logger.error(`Get pending revocations error: ${error.message}`);
@@ -209,14 +107,9 @@ router.get('/pending-revocations', async (req, res) => {
     }
 });
 
-/**
- * Get pending revocations for my org
- * GET /admin/pending-revocations/for-me
- */
 router.get('/pending-revocations/for-me', async (req, res) => {
     try {
-        const fabricClient = req.fabricClient;
-        const result = await fabricClient.getPendingRevocationsForOrg();
+        const result = await req.fabricClient.getPendingRevocationsForOrg();
         res.json(result);
     } catch (error) {
         logger.error(`Get pending revocations for org error: ${error.message}`);
@@ -224,13 +117,8 @@ router.get('/pending-revocations/for-me', async (req, res) => {
     }
 });
 
-/**
- * Get gateway status
- * GET /admin/status
- */
 router.get('/status', (req, res) => {
     const { getClientCount } = require('./events');
-
     res.json({
         success: true,
         status: 'running',
@@ -242,23 +130,18 @@ router.get('/status', (req, res) => {
 });
 
 // =============================================================================
-// ANNOTATION ADMIN ROUTES (v2.0)
+// ANNOTATION ADMIN ROUTES (v2.1: intent_type required)
 // =============================================================================
 
-/**
- * Endorse an annotation (admin version)
- * POST /admin/endorse-annotation
- */
 router.post('/endorse-annotation', async (req, res) => {
     try {
-        const { asset_id } = req.body;
-        if (!asset_id) {
-            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
-        }
+        const { asset_id, intent_type } = req.body;
+        if (!asset_id) return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        if (!intent_type) return res.status(400).json({ success: false, error: 'Missing required field: intent_type' });
         const fabricClient = req.fabricClient;
-        logger.info(`[${req.orgId}] EndorseAnnotation via admin: ${asset_id}`);
-        const result = await fabricClient.endorseAnnotation(asset_id);
-        logger.info(`Annotation endorsed via admin: ${asset_id} by ${fabricClient.getMspId()}`);
+        logger.info(`[${req.orgId}] EndorseAnnotation via admin: ${asset_id}:${intent_type}`);
+        const result = await fabricClient.endorseAnnotation(asset_id, intent_type);
+        logger.info(`Annotation endorsed via admin: ${asset_id}:${intent_type} by ${fabricClient.getMspId()}`);
         res.json(result);
     } catch (error) {
         logger.error(`Admin endorse annotation error: ${error.message}`);
@@ -266,20 +149,15 @@ router.post('/endorse-annotation', async (req, res) => {
     }
 });
 
-/**
- * Reject an annotation (admin version)
- * POST /admin/reject-annotation
- */
 router.post('/reject-annotation', async (req, res) => {
     try {
-        const { asset_id, reason } = req.body;
-        if (!asset_id) {
-            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
-        }
+        const { asset_id, intent_type, reason } = req.body;
+        if (!asset_id) return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        if (!intent_type) return res.status(400).json({ success: false, error: 'Missing required field: intent_type' });
         const fabricClient = req.fabricClient;
-        logger.info(`[${req.orgId}] RejectAnnotation via admin: ${asset_id}`);
-        const result = await fabricClient.rejectAnnotation(asset_id, reason || '');
-        logger.info(`Annotation rejected via admin: ${asset_id} by ${fabricClient.getMspId()}`);
+        logger.info(`[${req.orgId}] RejectAnnotation via admin: ${asset_id}:${intent_type}`);
+        const result = await fabricClient.rejectAnnotation(asset_id, intent_type, reason || '');
+        logger.info(`Annotation rejected via admin: ${asset_id}:${intent_type} by ${fabricClient.getMspId()}`);
         res.json(result);
     } catch (error) {
         logger.error(`Admin reject annotation error: ${error.message}`);
@@ -287,20 +165,15 @@ router.post('/reject-annotation', async (req, res) => {
     }
 });
 
-/**
- * Revoke an active annotation (admin version)
- * POST /admin/revoke-annotation
- */
 router.post('/revoke-annotation', async (req, res) => {
     try {
-        const { asset_id, reason } = req.body;
-        if (!asset_id) {
-            return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
-        }
+        const { asset_id, intent_type, reason } = req.body;
+        if (!asset_id) return res.status(400).json({ success: false, error: 'Missing required field: asset_id' });
+        if (!intent_type) return res.status(400).json({ success: false, error: 'Missing required field: intent_type' });
         const fabricClient = req.fabricClient;
-        logger.info(`[${req.orgId}] RevokeAnnotation via admin: ${asset_id}`);
-        const result = await fabricClient.revokeAnnotation(asset_id, reason || '');
-        logger.info(`Annotation revoked via admin: ${asset_id} by ${fabricClient.getMspId()}`);
+        logger.info(`[${req.orgId}] RevokeAnnotation via admin: ${asset_id}:${intent_type}`);
+        const result = await fabricClient.revokeAnnotation(asset_id, intent_type, reason || '');
+        logger.info(`Annotation revoked via admin: ${asset_id}:${intent_type} by ${fabricClient.getMspId()}`);
         res.json(result);
     } catch (error) {
         logger.error(`Admin revoke annotation error: ${error.message}`);
@@ -308,14 +181,9 @@ router.post('/revoke-annotation', async (req, res) => {
     }
 });
 
-/**
- * Get all active annotations
- * GET /admin/annotations
- */
 router.get('/annotations', async (req, res) => {
     try {
-        const fabricClient = req.fabricClient;
-        const result = await fabricClient.getAllActiveAnnotations();
+        const result = await req.fabricClient.getAllActiveAnnotations();
         res.json(result);
     } catch (error) {
         logger.error(`Get all annotations error: ${error.message}`);
@@ -323,14 +191,9 @@ router.get('/annotations', async (req, res) => {
     }
 });
 
-/**
- * Get annotation for a specific asset
- * GET /admin/annotations/:assetId
- */
-router.get('/annotations/:assetId', async (req, res) => {
+router.get('/annotations/:assetId/:intentType', async (req, res) => {
     try {
-        const fabricClient = req.fabricClient;
-        const result = await fabricClient.getAnnotation(req.params.assetId);
+        const result = await req.fabricClient.getAnnotation(req.params.assetId, req.params.intentType);
         res.json(result);
     } catch (error) {
         logger.error(`Get annotation error: ${error.message}`);
