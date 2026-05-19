@@ -3,6 +3,7 @@
 # up.sh - Complete startup of MR Anchor Registry
 # Starts Fabric network, deploys chaincode, and launches gateway with admin panels
 # ==============================================================================
+# v2 (Phase 3): also deploys skill-audit-registry chaincode for journal extension.
 
 set -e
 
@@ -69,7 +70,7 @@ echo ""
 # ==============================================================================
 # 1. Generate Crypto Materials
 # ==============================================================================
-echo -e "${YELLOW}[1/4] Generating crypto materials...${NC}"
+echo -e "${YELLOW}[1/5] Generating crypto materials...${NC}"
 
 if [ -f "scripts/generate.sh" ]; then
     chmod +x scripts/generate.sh
@@ -84,7 +85,7 @@ echo ""
 # ==============================================================================
 # 2. Start Docker Network
 # ==============================================================================
-echo -e "${YELLOW}[2/4] Starting Docker containers...${NC}"
+echo -e "${YELLOW}[2/5] Starting Docker containers...${NC}"
 
 if [ -f "network/docker/docker-compose.yaml" ]; then
     cd network/docker
@@ -121,7 +122,7 @@ echo "  Waiting for containers to be ready..."
 # ==============================================================================
 # 3. Create Channel
 # ==============================================================================
-echo -e "${YELLOW}[3/4] Creating and joining channel...${NC}"
+echo -e "${YELLOW}[3/5] Creating and joining channel...${NC}"
 
 if [ -f "scripts/channel.sh" ]; then
     chmod +x scripts/channel.sh
@@ -134,17 +135,35 @@ fi
 echo ""
 
 # ==============================================================================
-# 4. Deploy Chaincode
+# 4. Deploy anchor-registry chaincode
 # ==============================================================================
-echo -e "${YELLOW}[4/4] Deploying chaincode...${NC}"
+echo -e "${YELLOW}[4/5] Deploying anchor-registry chaincode...${NC}"
 
 if [ -f "scripts/chaincode.sh" ]; then
     chmod +x scripts/chaincode.sh
     ./scripts/chaincode.sh deploy
-    echo -e "${GREEN}  ✓ Chaincode deployed${NC}"
+    echo -e "${GREEN}  ✓ anchor-registry deployed${NC}"
 else
     echo -e "${RED}Error: scripts/chaincode.sh not found${NC}"
     exit 1
+fi
+echo ""
+
+# ==============================================================================
+# 5. Deploy skill-audit-registry chaincode (Phase 3, journal extension)
+# ==============================================================================
+echo -e "${YELLOW}[5/5] Deploying skill-audit-registry chaincode...${NC}"
+
+if [ -f "scripts/chaincode-skill-audit.sh" ]; then
+    if [ -d "chaincode/skill-audit-registry" ]; then
+        chmod +x scripts/chaincode-skill-audit.sh
+        ./scripts/chaincode-skill-audit.sh deploy
+        echo -e "${GREEN}  ✓ skill-audit-registry deployed (AND-endorsement policy)${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ chaincode/skill-audit-registry not found — skipping (Phase 3 not applied)${NC}"
+    fi
+else
+    echo -e "${YELLOW}  ⚠ scripts/chaincode-skill-audit.sh not found — skipping (Phase 3 not applied)${NC}"
 fi
 echo ""
 
@@ -175,6 +194,13 @@ echo -e "${BLUE}│${NC}  SSE Events:      ${GREEN}http://localhost:3000/events/
 echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}"
+echo -e "${BLUE}│  Chaincodes deployed on anchorchannel                        │${NC}"
+echo -e "${BLUE}├──────────────────────────────────────────────────────────────┤${NC}"
+echo -e "${BLUE}│${NC}  anchor-registry        ${YELLOW}OR(Org1 OR Org2)${NC}                     ${BLUE}│${NC}"
+echo -e "${BLUE}│${NC}  skill-audit-registry   ${YELLOW}AND(Org1 AND Org2)${NC}                   ${BLUE}│${NC}"
+echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}"
+echo ""
+echo -e "${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}│  Workflow                                                    │${NC}"
 echo -e "${BLUE}├──────────────────────────────────────────────────────────────┤${NC}"
 echo -e "${BLUE}│${NC}  1. Unity client proposes anchor    → ${YELLOW}PROPOSED${NC}              ${BLUE}│${NC}"
@@ -189,7 +215,7 @@ echo -e "${YELLOW}Starting Gateway Server... (Press Ctrl+C to stop)${NC}"
 echo ""
 
 # ==============================================================================
-# 5. Start BOTH Gateway Servers (Org1 + Org2)
+# 6. Start BOTH Gateway Servers (Org1 + Org2)
 # ==============================================================================
 echo -e "${YELLOW}Starting BOTH Gateway Servers (Org1:3000, Org2:3001)...${NC}"
 echo ""

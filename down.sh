@@ -3,6 +3,7 @@
 # down.sh - Complete shutdown and cleanup of MR Anchor Registry
 # Stops all containers, removes volumes, and cleans generated files
 # ==============================================================================
+# v2 (Phase 3): also cleans skill-audit-registry chaincode images + packages.
 
 set -e
 
@@ -89,12 +90,14 @@ echo -e "${GREEN}  ✓ Docker volumes removed${NC}"
 # ==============================================================================
 echo -e "${YELLOW}[4/5] Removing chaincode Docker images...${NC}"
 
-# Remove chaincode containers
+# Remove chaincode containers (both anchor-registry and skill-audit-registry produce
+# dev-peer-* containers; the wildcard catches them all)
 docker rm -f $(docker ps -aq --filter "name=dev-peer") 2>/dev/null || true
 
 # Remove chaincode images
 docker rmi -f $(docker images -q "dev-peer*") 2>/dev/null || true
 docker rmi -f $(docker images -q "*anchor-registry*") 2>/dev/null || true
+docker rmi -f $(docker images -q "*skill-audit-registry*") 2>/dev/null || true
 
 echo -e "${GREEN}  ✓ Chaincode images removed${NC}"
 
@@ -121,8 +124,9 @@ if [ -d "gateway/wallet" ]; then
     echo "  Removed gateway/wallet/"
 fi
 
-# Remove chaincode packages
+# Remove chaincode packages (both chaincodes deposit *.tar.gz under scripts/)
 rm -f chaincode/*.tar.gz 2>/dev/null || true
+rm -f scripts/*.tar.gz 2>/dev/null || true
 rm -f *.tar.gz 2>/dev/null || true
 echo "  Removed chaincode packages"
 
@@ -145,7 +149,7 @@ echo "All components have been stopped and cleaned:"
 echo "  • Gateway server stopped"
 echo "  • Docker containers removed"
 echo "  • Docker volumes removed"
-echo "  • Chaincode images removed"
+echo "  • Chaincode images removed (anchor-registry + skill-audit-registry)"
 echo "  • Generated crypto/artifacts cleaned"
 echo ""
 echo -e "Run ${YELLOW}./up.sh${NC} to start fresh."
