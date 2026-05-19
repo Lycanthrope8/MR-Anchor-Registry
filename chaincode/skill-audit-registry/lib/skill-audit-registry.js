@@ -83,6 +83,21 @@ const REQUIRED_ENVELOPE_FIELDS = [
 // Pattern for sha256 hashes the runtime emits.
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
 
+// ----- Helper: get the transaction's ordering timestamp as ISO string.
+// MUST be used everywhere a timestamp is written into state or events,
+// because `new Date()` returns wall-clock which differs between peers and
+// breaks the AND-endorsement read-write set match check.
+function txTimeISO(ctx) {
+    const ts = ctx.stub.getTxTimestamp();
+    // ts.seconds is a Long. Use toNumber() if present (older Fabric SDK),
+    // otherwise treat as a plain number.
+    const seconds = (ts.seconds && typeof ts.seconds.toNumber === 'function')
+        ? ts.seconds.toNumber()
+        : Number(ts.seconds);
+    const millis = Math.floor(Number(ts.nanos || 0) / 1e6);
+    return new Date(seconds * 1000 + millis).toISOString();
+}
+
 class SkillAuditRegistryContract extends Contract {
 
     // ==========================================================================
@@ -152,7 +167,7 @@ class SkillAuditRegistryContract extends Contract {
             );
         }
 
-        const recordedAt = new Date().toISOString();
+        const recordedAt = txTimeISO(ctx);
         const txId = ctx.stub.getTxID();
 
         // Initial audit state depends on decision type.
@@ -297,7 +312,7 @@ class SkillAuditRegistryContract extends Contract {
             );
         }
 
-        const linkedAt = new Date().toISOString();
+        const linkedAt = txTimeISO(ctx);
         record.linkedAnchorTxId = anchorTxId;
         record.finalState = finalState;
         record.linkedAt = linkedAt;
@@ -535,7 +550,7 @@ class SkillAuditRegistryContract extends Contract {
 
     _emitEvent(ctx, eventType, data) {
         const eventId = this._generateEventId(ctx);
-        const timestamp = new Date().toISOString();
+        const timestamp = txTimeISO(ctx);
         const event = {
             eventId,
             type: eventType,
