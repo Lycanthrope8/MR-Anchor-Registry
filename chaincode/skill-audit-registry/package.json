@@ -1,0 +1,25 @@
+{
+  "name": "skill-audit-registry",
+  "version": "1.0.0",
+  "description": "MR Skill Audit Registry Chaincode - Records LLM-mediated governance decision provenance with dual-org endorsement",
+  "main": "index.js",
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "start": "fabric-chaincode-node start",
+    "test": "mocha --recursive ./test"
+  },
+  "dependencies": {
+    "fabric-contract-api": "^2.5.0",
+    "fabric-shim": "^2.5.0"
+  },
+  "devDependencies": {
+    "chai": "^4.3.6",
+    "mocha": "^10.0.0",
+    "sinon": "^14.0.0",
+    "sinon-chai": "^3.7.0"
+  },
+  "author": "MR Anchor Registry",
+  "license": "Apache-2.0"
+}

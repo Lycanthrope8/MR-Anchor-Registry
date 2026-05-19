@@ -1,400 +1,235 @@
-# MR Anchor Registry - Two Organization Hyperledger Fabric Setup
+# Phase 3 — Skill Audit Registry Chaincode
 
-A complete Hyperledger Fabric blockchain solution for managing Mixed Reality anchor claims with a two-organization endorsement model.
+Adds the `skill-audit-registry` chaincode to your existing `MR-Anchor-Registry` repository, alongside the existing `anchor-registry`. Records on-chain provenance of every LLM-mediated governance decision the runtime emits.
 
-## Architecture Overview
+> **Design principle:** *The LLM prepares. The gateway validates. The chaincode enforces. **The ledger records.*** This is the *records* part. It's the novel artifact of the journal extension and the empirical basis for **property P2 — verifiable provenance**.
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           MR Anchor Registry                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌──────────────┐                              ┌──────────────┐         │
-│  │   Unity      │                              │   Unity      │         │
-│  │   Client     │                              │   Client     │         │
-│  │   (Org1)     │                              │   (Org2)     │         │
-│  └──────┬───────┘                              └──────┬───────┘         │
-│         │                                             │                  │
-│         ▼                                             ▼                  │
-│  ┌──────────────────┐                     ┌──────────────────┐          │
-│  │  Gateway (Org1)  │                     │  Gateway (Org2)  │          │
-│  │  Port 3000       │                     │  Port 3001       │          │
-│  │  Holds ONLY Org1 │                     │  Holds ONLY Org2 │          │
-│  │  private key     │                     │  private key     │          │
-│  └────────┬─────────┘                     └────────┬─────────┘          │
-│           │                                        │                     │
-│           ▼                                        ▼                     │
-│  ┌──────────────────────────────────────────────────────────────┐       │
-│  │              Hyperledger Fabric Network                       │       │
-│  │                                                               │       │
-│  │  ┌──────────┐    ┌──────────┐    ┌──────────┐               │       │
-│  │  │ Orderer  │    │  Peer0   │    │  Peer0   │               │       │
-│  │  │          │    │  Org1    │    │  Org2    │               │       │
-│  │  └──────────┘    └──────────┘    └──────────┘               │       │
-│  │                                                               │       │
-│  │  ┌──────────────────────────────────────────────────┐        │       │
-│  │  │           anchor-registry Chaincode              │        │       │
-│  │  │  Fabric Tx Endorsement: OR(Org1MSP, Org2MSP)    │        │       │
-│  │  │  Governance Approval:   Both orgs must endorse   │        │       │
-│  │  └──────────────────────────────────────────────────┘        │       │
-│  └──────────────────────────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────────────────────────┘
+---
 
-Identity isolation: Each gateway process holds exactly one org's private key.
-No client input (header, query parameter, or body field) can cause a gateway
-to submit transactions as a different organization.
-
-SSE is ledger-driven: each gateway subscribes to Fabric chaincode events,
-so clients connected to EITHER gateway see the same global event stream.
-```
-
-## Claim Lifecycle
+## What this delivers
 
 ```
-                    ┌──────────────┐
-                    │   PROPOSED   │◄──────── Org1 or Org2 proposes
-                    └──────┬───────┘
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-              ▼                         ▼
-       ┌──────────┐              ┌──────────┐
-       │  ACTIVE  │              │ REJECTED │
-       └────┬─────┘              └──────────┘
-            │
-            │ Either org initiates revoke
-            ▼
-    ┌───────────────┐
-    │ REVOKE_PENDING│◄─── Requires other org's endorsement
-    └───────┬───────┘
-            │
-   ┌────────┴────────┐
-   │                 │
-   ▼                 ▼
-┌──────────┐   ┌──────────┐
-│ REVOKED  │   │  ACTIVE  │◄─── Revoke rejected, back to ACTIVE
-└──────────┘   └──────────┘
-```
-
-## Directory Structure
-
-```
-MR-Anchor-Registry/
-├── network/
-│   ├── crypto-config.yaml          # Org1 + Org2 certificate config
-│   ├── configtx/
-│   │   └── configtx.yaml           # Channel & endorsement policies
-│   ├── docker/
-│   │   └── docker-compose.yaml     # Network containers
-│   ├── crypto-config/              # Generated certificates (after ./scripts/generate.sh)
-│   └── channel-artifacts/          # Generated channel files
-│
+MR-Anchor-Registry/                          (your existing repo)
 ├── chaincode/
-│   └── anchor-registry/
-│       ├── lib/
-│       │   └── anchor-registry.js  # Smart contract with revocation logic
+│   ├── anchor-registry/                     (unchanged)
+│   └── skill-audit-registry/                ← NEW
 │       ├── index.js
-│       └── package.json
-│
-├── gateway/
-│   ├── src/
-│   │   ├── server.js               # Express server with dual-org support
-│   │   ├── services/
-│   │   │   ├── fabricClient.js     # Fabric Gateway client
-│   │   │   └── logger.js
-│   │   └── routes/
-│   │       ├── claims.js           # Propose/endorse/reject endpoints
-│   │       ├── admin.js            # Revocation workflow endpoints
-│   │       └── events.js           # SSE stream + snapshot
-│   ├── config/
-│   │   ├── connection-org1.json    # Org1 connection profile
-│   │   └── connection-org2.json    # Org2 connection profile
-│   └── admin-panel/
-│       ├── org1/                   # Blue-themed Org1 admin UI
-│       └── org2/                   # Green-themed Org2 admin UI
-│
-├── unity/
-│   └── Gateway/
-│       ├── GatewayClient.cs        # REST client with revocation methods
-│       ├── GatewayConfig.cs        # Config with org identity
-│       ├── GatewaySync.cs          # Main orchestrator
-│       └── AnchorClaimState.cs     # State models with REVOKE_PENDING
-│
-└── scripts/
-    ├── generate.sh                 # Generate crypto & channel artifacts
-    ├── channel.sh                  # Create/join channel
-    └── chaincode.sh                # Deploy chaincode
+│       ├── package.json
+│       ├── lib/skill-audit-registry.js
+│       └── test/skill-audit-registry.test.js
+├── scripts/
+│   ├── chaincode.sh                         (unchanged)
+│   └── chaincode-skill-audit.sh             ← NEW
+└── tools/                                   ← NEW directory
+    └── replay-decision.js                   ← NEW: property-P2 demonstration
 ```
 
-## Prerequisites
+Plus a `gateway/` integration that's reserved for Phase 4 — Phase 3 is the chaincode itself, its unit tests, the deploy script, and the off-chain replay/verification tool. No gateway code yet.
 
-1. **Docker & Docker Compose**
-2. **Node.js 16+**
-3. **Hyperledger Fabric binaries** (from fabric-samples)
+---
 
-Ensure `fabric-samples` is at the same level as this project:
+## Architectural fit
+
+Same `anchorchannel`. Same Fabric network. Same MSPs. Same conventions as `anchor-registry`:
+
+| Concern | Mirrors anchor-registry |
+|---|---|
+| Class structure | Single `Contract` subclass exporting one contract |
+| Identity | `ctx.clientIdentity.getMSPID()` validated against `VALID_MSPS = ['Org1MSP', 'Org2MSP']` |
+| Event IDs | TxID + per-tx suffix (no global counters → no MVCC conflicts) |
+| Key prefixes | `SKILL_DECISION::`, `SKILL_EVENT::`, `SKILL_DECISION_BY_ANCHOR::` |
+| Event helper | `_emitEvent(ctx, eventType, data)` |
+| Hash helper | `_hashPayload({...})` |
+| Test stack | mocha + chai + sinon, run via `npm test` |
+| Package manager | npm with `fabric-contract-api ^2.5.0` and `fabric-shim ^2.5.0` |
+
+**The one deliberate difference:** endorsement policy is **stricter**.
+
+| Chaincode | Endorsement |
+|---|---|
+| `anchor-registry` | `OR('Org1MSP.peer','Org2MSP.peer')` — single-org commits, app-level dual enforcement |
+| `skill-audit-registry` | `AND('Org1MSP.peer','Org2MSP.peer')` — both orgs must endorse every write |
+
+This is deliberate. Per §7.3 of the proposal: *agent provenance must be jointly attested.* If either organization alone could write the audit record, the record could be forged by a compromised single gateway. AND endorsement means audit forgery requires compromising both orgs simultaneously — the same trust assumption Fabric itself relies on.
+
+---
+
+## What the chaincode stores
+
+Per decision (one record per call to `RecordSkillDecision`):
 
 ```
-parent-directory/
-├── fabric-samples/
-│   ├── bin/
-│   │   ├── cryptogen
-│   │   ├── configtxgen
-│   │   ├── peer
-│   │   └── ...
-│   └── config/
-└── MR-Anchor-Registry/
+SKILL_DECISION::<decisionId> -> {
+  decisionId, txId, state,
+  skillId, skillVersion, skillManifestHash,
+  llmProvider, llmModel, llmCallId, llmFinishReason,
+  llmLatencyMs, llmUsage, tokenEstimate, levelsLoaded,
+  intentHash, contextHash, argumentHash,    ← hashes only, never raw text
+  decisionType, selectedChaincode, selectedFunction,
+  riskLevel, requiresConfirmation, shouldInvoke,
+  schemaValidation, policyValidation, policyReasoning, errors,
+  submittingOrg, gatewayId, callerMsp,
+  timestamp, recordedAt,
+  linkedAnchorTxId, finalState, linkedAt
+}
 ```
 
-## Quick Start
+Plus events `SKILL_EVENT::<txId>:<suffix>` for `SKILL_DECISION_RECORDED` and `SKILL_DECISION_LINKED`, and an index `SKILL_DECISION_BY_ANCHOR::<assetId> -> [decisionId,...]` for fast per-asset lookup.
 
-### 1. Generate Crypto Materials
+**Never stored on-chain:** raw user text, raw LLM output, raw poses, scene data, credentials. The chaincode actively refuses envelopes that look like they contain API keys (matches `sk-[A-Za-z0-9]{20,}`) or PEM-encoded private keys.
+
+---
+
+## Functions
+
+| Function | Type | Purpose |
+|---|---|---|
+| `InitLedger` | write | Initialize ledger, emit `AUDIT_LEDGER_INITIALIZED` event |
+| `RecordSkillDecision(envelopeJson)` | write | Persist a decision envelope, return `decisionId` + `txId` |
+| `LinkAnchorTx(decisionId, anchorTxId, finalState, assetId)` | write | After gateway invokes anchor-registry, attach the anchor tx id |
+| `QuerySkillDecision(decisionId)` | read | Single record by ID |
+| `ListDecisionsByAnchor(assetId)` | read | All decisionIds linked to an asset |
+| `ReplayDecision(decisionId)` | read | Full causal chain: decision + all events, chronologically |
+| `GetAuditStats()` | read | Aggregate counts by state, decisionType, function, provider |
+
+The state machine for an audit record:
+
+```
+RecordSkillDecision(INVOKE)  ─▶  RECORDED  ──LinkAnchorTx──▶  LINKED   (terminal)
+RecordSkillDecision(REJECT)  ─▶  RECORDED_REJECT                        (terminal)
+RecordSkillDecision(CLARIFY) ─▶  RECORDED_REJECT                        (terminal)
+```
+
+---
+
+## Running the unit tests locally — no Fabric needed
 
 ```bash
-cd MR-Anchor-Registry
-chmod +x scripts/*.sh
-./scripts/generate.sh
-```
-
-### 2. Start the Network
-
-```bash
-cd network/docker
-docker-compose up -d
-```
-
-### 3. Create Channel & Join Peers
-
-```bash
-./scripts/channel.sh all
-```
-
-### 4. Deploy Chaincode
-
-```bash
-./scripts/chaincode.sh deploy
-```
-
-### 5. Start Gateway Server
-
-```bash
-cd gateway
+cd MR-Anchor-Registry/chaincode/skill-audit-registry
 npm install
-npm start
+npm test
 ```
 
-### 6. Access Admin Panels
-
-- **Org1 Admin:** http://localhost:3000/admin-panel/org1
-- **Org2 Admin:** http://localhost:3000/admin-panel/org2
-
-## API Endpoints
-
-### Claims (Unity Client)
-
-| Method | Endpoint             | Description           |
-| ------ | -------------------- | --------------------- |
-| POST   | `/claims/propose`  | Propose new anchor    |
-| POST   | `/claims/endorse`  | Endorse pending claim |
-| POST   | `/claims/reject`   | Reject pending claim  |
-| GET    | `/claims/:assetId` | Get claim details     |
-
-### Admin (Revocation Workflow)
-
-| Method | Endpoint                              | Description              |
-| ------ | ------------------------------------- | ------------------------ |
-| POST   | `/admin/revoke`                     | Initiate revocation      |
-| POST   | `/admin/endorse-revoke`             | Endorse revocation       |
-| POST   | `/admin/reject-revoke`              | Reject revocation        |
-| GET    | `/admin/pending-revocations`        | List all pending         |
-| GET    | `/admin/pending-revocations/for-me` | List requiring my action |
-| GET    | `/admin/anchors`                    | List active anchors      |
-
-### Events (SSE)
-
-| Method | Endpoint             | Description            |
-| ------ | -------------------- | ---------------------- |
-| GET    | `/events/stream`   | SSE event stream       |
-| GET    | `/events/snapshot` | Current state snapshot |
-
-## Revocation Workflow
-
-### 1. Org1 Initiates Revocation
-
-```javascript
-// From Unity (Org1)
-GatewaySync.Instance.RevokeAnchor("asset_123", "Quality degraded");
-
-// Or via HTTP
-POST /admin/revoke
-Headers: x-org-id: org1
-Body: { "asset_id": "asset_123", "reason": "Quality degraded" }
-```
-
-### 2. State Changes to REVOKE_PENDING
-
-The chaincode sets:
-
-- `state` → `REVOKE_PENDING`
-- `revokeInitiatedBy` → `Org1MSP`
-- `requiredEndorser` → `Org2MSP`
-
-### 3. Org2 Must Respond
-
-**Option A: Endorse (Complete Revocation)**
-
-```javascript
-// From Unity (Org2)
-GatewaySync.Instance.EndorseRevoke("asset_123");
-```
-
-Result: Anchor is **REVOKED** and **deleted** from active registry.
-
-**Option B: Reject (Keep Active)**
-
-```javascript
-// From Unity (Org2)
-GatewaySync.Instance.RejectRevoke("asset_123", "Anchor still needed");
-```
-
-Result: Anchor returns to **ACTIVE** state.
-
-## Unity Integration
-
-### Setup
-
-1. Copy files from `unity/Gateway/` to your Unity project
-2. Create a `GatewayConfig` ScriptableObject:
-   - Assets → Create → AR Detection → Gateway Config
-3. Configure:
-   - Gateway URL
-   - Organization ID (`org1` or `org2`)
-   - API Key
-
-### Usage
-
-```csharp
-// Propose anchor
-GatewaySync.Instance.ProposeAnchor(
-    assetId: "asset_123",
-    worldPose: currentPose,
-    confidence: 0.95f,
-    stabilityRms: 0.02f,
-    observationCount: 50
-);
-
-// Initiate revocation (as current org)
-GatewaySync.Instance.RevokeAnchor("asset_123", "Reason");
-
-// Respond to revocation (from other org)
-GatewaySync.Instance.EndorseRevoke("asset_123");
-// or
-GatewaySync.Instance.RejectRevoke("asset_123", "Keep it");
-
-// Check pending revocations
-foreach (var state in GatewaySync.Instance.GetPendingRevocationsRequiringMyAction())
-{
-    Debug.Log($"Need to respond to: {state.assetId}");
-}
-```
-
-### Events
-
-```csharp
-void Start()
-{
-    GatewaySync.Instance.OnRevokePending.AddListener(OnRevokePending);
-    GatewaySync.Instance.OnRevokeCompleted.AddListener(OnRevokeCompleted);
-}
-
-void OnRevokePending(string assetId, string initiatedBy)
-{
-    Debug.Log($"Revocation pending for {assetId}, initiated by {initiatedBy}");
-}
-
-void OnRevokeCompleted(string assetId)
-{
-    // Remove anchor visualization
-}
-```
-
-## Endorsement and Governance
-
-This system has TWO distinct endorsement layers. Conflating them is a common
-source of confusion; here is the precise distinction:
-
-### 1. Fabric Transaction Endorsement Policy (OR)
-
-The chaincode lifecycle endorsement policy is:
+Expected output:
 
 ```
-OR('Org1MSP.peer', 'Org2MSP.peer')
+SkillAuditRegistryContract
+  InitLedger
+    ✔ writes an init event and returns success
+  RecordSkillDecision — validation
+    ✔ rejects an envelope missing required fields
+    ✔ rejects an envelope with bad hash format
+    ✔ rejects unknown decisionType
+    ✔ rejects unknown submittingOrg
+    ✔ rejects cross-org submission (caller MSP != submittingOrg)
+    ✔ rejects envelope containing what looks like a private key
+    ✔ rejects envelope containing what looks like an API key
+  RecordSkillDecision — happy path
+    ✔ records an INVOKE decision and sets state=RECORDED
+    ✔ records a REJECT decision with state=RECORDED_REJECT (terminal)
+    ✔ rejects duplicate decisionId (replay protection)
+  LinkAnchorTx
+    ✔ attaches an anchorTxId + finalState to a recorded INVOKE decision
+    ✔ is idempotent: re-linking the same tx returns success
+    ✔ rejects re-linking with a contradicting anchorTxId
+    ✔ rejects linking a REJECT decision (no anchor tx expected)
+    ✔ rejects linking an unknown decisionId
+  Reads
+    ✔ QuerySkillDecision returns the stored record
+    ✔ QuerySkillDecision throws for missing decisionId
+    ✔ ListDecisionsByAnchor returns linked decisionIds in order
+    ✔ ListDecisionsByAnchor returns empty list for unknown asset
+    ✔ ReplayDecision returns decision + all matching events
+    ✔ ReplayDecision: replayable=true requires all hash fields valid
+    ✔ GetAuditStats aggregates by state, decisionType, function, provider
+  Identity enforcement
+    ✔ rejects record/link calls from an unknown MSP
+
+24 passing
 ```
 
-This means a **single peer** from **either** org can endorse (execute + sign)
-a transaction proposal before it is submitted to the orderer and committed.
-This is set in `scripts/chaincode.sh` and is a Fabric infrastructure concern.
+All 24 tests run in ~50 ms. No Fabric, no network calls.
 
-### 2. Application-Level Governance Rule (dual-org approval)
+---
 
-The chaincode **state machine** enforces that a claim only transitions to
-ACTIVE when **both** organizations have called `EndorseClaim`:
+## Off-chain replay tool
 
-```
-PROPOSED  ──Org1 endorses──▶  ENDORSED_ORG1  ──Org2 endorses──▶  ACTIVE
-PROPOSED  ──Org2 endorses──▶  ENDORSED_ORG2  ──Org1 endorses──▶  ACTIVE
-```
+`tools/replay-decision.js` reads a decision export (the JSON returned by `ReplayDecision`) and verifies:
 
-Revocations work analogously: one org initiates, the other must endorse.
-
-**Why not use Fabric AND endorsement?**
-Using `AND('Org1MSP.peer','Org2MSP.peer')` at the Fabric level would require
-*both* peers to execute and sign every transaction (including read-heavy
-queries routed through `evaluateTransaction`).  Since the chaincode already
-enforces dual-org approval at the application level, the Fabric OR policy is
-sufficient: it ensures every transaction is properly signed by one org, while
-the chaincode logic ensures both orgs participate in the governance lifecycle.
-
-### 3. Identity Isolation (two gateway processes)
-
-Each organization operates its own gateway process.  The Org1 gateway
-(port 3000) holds only Org1's private key; the Org2 gateway (port 3001)
-holds only Org2's.  No runtime configuration or client input can cause one
-gateway to submit transactions as another organization.
-
-## Security Notes
-
-1. API keys should be rotated and kept secure
-2. In production, use proper certificate management
-3. Consider enabling TLS for all connections
-4. Implement proper RBAC in admin panels
-
-## Troubleshooting
-
-### Chaincode Issues
+- All required fields present
+- All hashes match `sha256:<64hex>` format
+- `decisionType` and `state` are in allowed sets
+- Lifecycle invariants: `LINKED ↔ has anchor tx`, `REJECT ↔ no anchor tx`
+- Events all reference the same `decisionId` and are chronologically ordered
+- (Optional, with `--verify-skill <path>`) Recompute manifest hash from local content and confirm it matches the on-chain value
 
 ```bash
-docker logs peer0.org1.anchor-registry.com
-docker logs peer0.org2.anchor-registry.com
+# Basic verification of an exported decision record
+node tools/replay-decision.js path/to/decision-export.json
+
+# Full verification including manifest-hash recomputation
+node tools/replay-decision.js path/to/decision-export.json \
+    --verify-skill ../MR-Skill-Assets/spatial-governance-skill
 ```
 
-### Network Issues
+Exit codes:
+- `0` — replay verified, all invariants hold
+- `1` — one or more verification failures (errors listed)
+- `2` — usage error
+
+**This tool is property P2 made operational.** An external auditor (or a reviewer of your journal paper) can:
+1. Pick any committed Fabric transaction.
+2. Call `ReplayDecision(decisionId)` to get the audit chain.
+3. Run `replay-decision.js --verify-skill <tagged-MR-Skill-Assets>` to confirm the on-chain hash matches the actual content that was deployed.
+
+If all three steps succeed, the agent's decision is cryptographically reproducible.
+
+---
+
+## Deployment (requires Fabric — Phase 0 prerequisite)
+
+When your cloud server is back online and Phase 0 is verified:
 
 ```bash
-docker ps -a
-docker-compose -f network/docker/docker-compose.yaml logs
+cd MR-Anchor-Registry/scripts
+chmod +x chaincode-skill-audit.sh
+./chaincode-skill-audit.sh deploy   # package + install + approve + commit + init
+./chaincode-skill-audit.sh test     # quick smoke: invoke + query
 ```
 
-### Reset Everything
+The script mirrors `chaincode.sh` exactly except:
+- `CC_NAME=skill-audit-registry` (different name)
+- `CC_END_POLICY="AND('Org1MSP.peer','Org2MSP.peer')"` (stricter policy)
+- `CC_SRC_PATH=../chaincode/skill-audit-registry`
 
-```bash
-cd network/docker
-docker-compose down -v
-cd ../..
-rm -rf network/crypto-config network/channel-artifacts
-./scripts/generate.sh
-```
+It deploys to the **same channel** (`anchorchannel`) the existing `anchor-registry` already runs on. No new channel needed.
+
+---
+
+## Integration points for Phase 4
+
+The gateway will need to:
+
+1. **Generate `decisionId`** (UUID is fine; the chaincode just requires uniqueness).
+2. **Build the audit envelope** from the runtime's `Decision` object plus gateway-side fields (`gatewayId`, `schemaValidation`, `policyValidation`).
+3. **Call `RecordSkillDecision`** *before* invoking `anchor-registry`. This way the audit record exists even if the anchor invocation later fails.
+4. **Call `LinkAnchorTx`** *after* `anchor-registry` succeeds, passing the returned `fabricTxId`, the resulting state, and the `assetId` for indexing.
+5. **Allowlist enforcement** — reject decisions whose `skillManifestHash` is not in the gateway's known-good set (each `MR-Skill-Assets` tag's hash is added through change-controlled deployment).
+
+The chaincode is opaque to anchor-registry's function names. If the skill says `selectedFunction: "EndorseAnchor"` but the real chaincode is `EndorseClaim`, the audit chaincode happily records `"EndorseAnchor"` — but that's a discrepancy the **gateway** should reconcile via a name mapping (or, cleaner, via a v0.1.2 patch to `MR-Skill-Assets` that aligns names with reality). See "Outstanding tasks" below.
+
+---
+
+## Outstanding tasks
+
+| Tag | Owner | Description |
+|---|---|---|
+| MR-Skill-Assets v0.1.2 | content | Align `chaincode_interface.json` function names with the real `anchor-registry` chaincode: `EndorseClaim` (not `EndorseAnchor`), `RevokeAnchor` (not `ProposeRevocation`), `EndorseRevoke` (not `EndorseRevocation`), `GetClaim`/`GetActiveAnchor`/`GetSnapshot` for reads. Args use `assetId`, not `claimId`. **Must precede Phase 4.** |
+| MR-Skill-Assets v0.1.x | content | Decide whether the skill should also govern annotations (the ADVISORY/GOVERNED tier system in `anchor-registry`). The conference paper may not have included this — if the journal extension covers annotations too, the skill needs a second supported chaincode interface. **Discuss with professor.** |
+| Phase 4 | runtime + gateway | Wire `/skills/interpret` (runtime) → `/skills/execute` (gateway) → `RecordSkillDecision` → `anchor-registry` invoke → `LinkAnchorTx`. |
+
+---
 
 ## License
 
-Apache 2.0
+Apache 2.0 (matches the parent project).
