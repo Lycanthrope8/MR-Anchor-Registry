@@ -24,6 +24,7 @@ const CRYPTO_DIR = path.join(NETWORK_DIR, 'crypto-config');
 // Channel and chaincode
 const CHANNEL_NAME = 'anchorchannel';
 const CHAINCODE_NAME = 'anchor-registry';
+const AUDIT_CHAINCODE_NAME = 'skill-audit-registry';
 
 /**
  * Helper function to convert result to JSON
@@ -59,6 +60,7 @@ class FabricClient {
         this.gateway = null;
         this.network = null;
         this.contract = null;
+        this.auditContract = null;
         this.client = null;
         this.connected = false;
         this.eventIterator = null;
@@ -153,6 +155,8 @@ class FabricClient {
 
             this.network = this.gateway.getNetwork(CHANNEL_NAME);
             this.contract = this.network.getContract(CHAINCODE_NAME);
+            this.auditContract = this.network.getContract(AUDIT_CHAINCODE_NAME);
+            logger.info(`[${this.org}] ✓ skill-audit-registry contract handle obtained`);
 
             this.connected = true;
             logger.info(`✓ ${this.org} (${this.mspId}) connected successfully`);
@@ -415,6 +419,93 @@ class FabricClient {
         if (!parsed) return { history: [], count: 0 };
         return parsed;
     }
+    // =========================================================================
+    // SKILL-AUDIT-REGISTRY METHODS (Phase 4)
+    // =========================================================================
+
+    /**
+     * Record a skill decision envelope on-chain. The chaincode validates
+     * the envelope (required fields, hash formats, caller-msp == submittingOrg)
+     * and refuses duplicates. Returns the persisted record's identifiers.
+     *
+     * @param {object} envelope - audit envelope built by the gateway
+     * @returns {Promise<object>} { success, decision_id, tx_id, state, recorded_at, event_id }
+     */
+    async recordSkillDecision(envelope) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        if (!this.auditContract) throw new Error('audit contract not bound (connect first)');
+        logger.info(`[${this.org}] RecordSkillDecision: ${envelope.decisionId}`);
+        const result = await this.auditContract.submitTransaction(
+            'RecordSkillDecision',
+            JSON.stringify(envelope)
+        );
+        return resultToJson(result);
+    }
+
+    /**
+     * After a successful anchor-registry invocation, link the audit record
+     * to the anchor tx id (and the final state the anchor reached).
+     *
+     * Idempotent: re-linking the same tx is OK; linking a different tx fails.
+     *
+     * @param {string} decisionId
+     * @param {string} anchorTxId
+     * @param {string} finalState   - e.g. 'PROPOSED', 'ENDORSED_ORG1', 'ACTIVE'
+     * @param {string} assetId      - for the per-anchor decision index
+     */
+    async linkAnchorTx(decisionId, anchorTxId, finalState, assetId) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        if (!this.auditContract) throw new Error('audit contract not bound');
+        logger.info(`[${this.org}] LinkAnchorTx: ${decisionId} -> ${anchorTxId}`);
+        const result = await this.auditContract.submitTransaction(
+            'LinkAnchorTx',
+            decisionId,
+            anchorTxId,
+            finalState,
+            assetId || ''
+        );
+        return resultToJson(result);
+    }
+
+    /**
+     * Read-only: fetch a single audit record by decisionId.
+     */
+    async querySkillDecision(decisionId) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        if (!this.auditContract) throw new Error('audit contract not bound');
+        const result = await this.auditContract.evaluateTransaction(
+            'QuerySkillDecision',
+            decisionId
+        );
+        return resultToJson(result);
+    }
+
+    /**
+     * Read-only: full causal chain (decision + all linked events) for replay.
+     */
+    async replayDecision(decisionId) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        if (!this.auditContract) throw new Error('audit contract not bound');
+        const result = await this.auditContract.evaluateTransaction(
+            'ReplayDecision',
+            decisionId
+        );
+        return resultToJson(result);
+    }
+
+    /**
+     * Read-only: all decisionIds linked to an asset.
+     */
+    async listDecisionsByAnchor(assetId) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        if (!this.auditContract) throw new Error('audit contract not bound');
+        const result = await this.auditContract.evaluateTransaction(
+            'ListDecisionsByAnchor',
+            assetId
+        );
+        return resultToJson(result);
+    }
+
 }
 
 module.exports = FabricClient;

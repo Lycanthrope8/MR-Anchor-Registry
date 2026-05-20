@@ -29,6 +29,7 @@ const adminRoutes = require('./routes/admin');
 const eventsRoutes = require('./routes/events');
 const annotationsRoutes = require('./routes/annotations');
 const benchmarkRoutes = require('./routes/benchmark');
+const skillsRoutes = require('./routes/skills');
 const logger = require('./services/logger');
 const { experimentLogMiddleware } = require('./services/experimentLogger');
 const { startChaincodeEventListener } = require('./routes/events');
@@ -108,6 +109,7 @@ app.use('/annotations', annotationsRoutes);
 app.use('/admin', adminRoutes);
 app.use('/admin', benchmarkRoutes);
 app.use('/events', eventsRoutes);
+app.use('/skills', skillsRoutes);
 
 // Static files for admin panels
 app.use('/admin-panel/org1', express.static(path.join(__dirname, '../admin-panel/org1')));
@@ -156,6 +158,7 @@ async function startServer() {
         logger.info(`Experiment logging: ENABLED`);
         logger.info(`SSE source: Fabric chaincode events (ledger-driven)`);
         logger.info(`Annotation routes: /annotations/*`);
+        logger.info(`Skill routes: /skills/* (LLM-mediated governance)`);
         logger.info(`============================================`);
     });
 }
