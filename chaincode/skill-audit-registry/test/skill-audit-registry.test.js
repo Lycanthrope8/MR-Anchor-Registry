@@ -434,7 +434,245 @@ describe('SkillAuditRegistryContract', () => {
             expect(stats.byProvider).to.deep.equal({ parley: 3 });
         });
     });
-
+    describe('UpdateDecisionOutcome (v1.0.2) — success path', () => {
+ 
+        it('transitions RECORDED → RECORDED_AND_LINKED with anchorTxId', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+ 
+            const result = await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_AND_LINKED', 'anchor-tx-abc', ''
+            );
+            const parsed = JSON.parse(result);
+            expect(parsed.success).to.equal(true);
+            expect(parsed.state).to.equal('RECORDED_AND_LINKED');
+            expect(parsed.terminal_by).to.equal('Org1MSP');
+ 
+            // Verify on-chain record
+            const stored = JSON.parse(
+                ctx.stub._state.get('SKILL_DECISION::sd-test-0001').toString()
+            );
+            expect(stored.state).to.equal('RECORDED_AND_LINKED');
+            expect(stored.linkedAnchorTxId).to.equal('anchor-tx-abc');
+            expect(stored.errorReason).to.equal(null);
+            expect(stored.terminalAt).to.be.a('string');
+        });
+ 
+    });
+ 
+    describe('UpdateDecisionOutcome (v1.0.2) — failed-attempt path', () => {
+ 
+        it('transitions RECORDED → RECORDED_FAILED_ATTEMPT with errorReason', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+ 
+            const result = await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_FAILED_ATTEMPT', '', 'anchor is REVOKED'
+            );
+            const parsed = JSON.parse(result);
+            expect(parsed.state).to.equal('RECORDED_FAILED_ATTEMPT');
+ 
+            const stored = JSON.parse(
+                ctx.stub._state.get('SKILL_DECISION::sd-test-0001').toString()
+            );
+            expect(stored.errorReason).to.equal('anchor is REVOKED');
+            expect(stored.linkedAnchorTxId).to.equal(null);
+        });
+ 
+        it('sanitizes errorReason: strips control chars, collapses whitespace, truncates', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+ 
+            const dirty = 'anchor\x00is\nREVOKED' + ' '.repeat(20) + 'because' + 'x'.repeat(500);
+            await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_FAILED_ATTEMPT', '', dirty
+            );
+            const stored = JSON.parse(
+                ctx.stub._state.get('SKILL_DECISION::sd-test-0001').toString()
+            );
+            expect(stored.errorReason).to.not.include('\x00');
+            expect(stored.errorReason).to.not.include('\n');
+            expect(stored.errorReason.length).to.be.at.most(256);
+            expect(stored.errorReason).to.match(/truncated$/);
+        });
+ 
+    });
+ 
+    describe('UpdateDecisionOutcome (v1.0.2) — idempotency', () => {
+ 
+        it('same SUCCESS outcome + same anchorTxId is a no-op', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+            await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_AND_LINKED', 'anchor-tx-same', ''
+            );
+ 
+            const result = await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_AND_LINKED', 'anchor-tx-same', ''
+            );
+            const parsed = JSON.parse(result);
+            expect(parsed.note).to.equal('already terminal (idempotent)');
+        });
+ 
+        it('same FAILED_ATTEMPT outcome + same reason is a no-op', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+            await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_FAILED_ATTEMPT', '', 'anchor is REVOKED'
+            );
+ 
+            const result = await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_FAILED_ATTEMPT', '', 'anchor is REVOKED'
+            );
+            const parsed = JSON.parse(result);
+            expect(parsed.note).to.equal('already terminal (idempotent)');
+        });
+ 
+        it('SUCCESS outcome + DIFFERENT anchorTxId is rejected', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+            await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_AND_LINKED', 'anchor-tx-first', ''
+            );
+            try {
+                await contract.UpdateDecisionOutcome(
+                    ctx, 'sd-test-0001', 'RECORDED_AND_LINKED', 'anchor-tx-different', ''
+                );
+                throw new Error('expected to throw');
+            } catch (e) {
+                expect(e.message).to.match(/different anchorTxId/);
+            }
+        });
+ 
+        it('conflicting terminal outcome (SUCCESS → FAILED) is rejected', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+            await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_AND_LINKED', 'anchor-tx-ok', ''
+            );
+            try {
+                await contract.UpdateDecisionOutcome(
+                    ctx, 'sd-test-0001', 'RECORDED_FAILED_ATTEMPT', '', 'changed my mind'
+                );
+                throw new Error('expected to throw');
+            } catch (e) {
+                expect(e.message).to.match(/already in terminal state/);
+            }
+        });
+ 
+    });
+ 
+    describe('UpdateDecisionOutcome (v1.0.2) — grandfathered LINKED', () => {
+ 
+        it('LINKED + RECORDED_AND_LINKED with matching anchorTxId is a no-op', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+            // Use the existing LinkAnchorTx path (v1.0.1 flow)
+            await contract.LinkAnchorTx(ctx, 'sd-test-0001', 'anchor-tx-legacy', 'ACTIVE', 'TAG_test');
+ 
+            // Now call UpdateDecisionOutcome with the same anchorTxId — should be idempotent
+            const result = await contract.UpdateDecisionOutcome(
+                ctx, 'sd-test-0001', 'RECORDED_AND_LINKED', 'anchor-tx-legacy', ''
+            );
+            const parsed = JSON.parse(result);
+            expect(parsed.note).to.equal('already terminal (idempotent)');
+ 
+            // Original record is still in LINKED state (not rewritten — grandfathered)
+            const stored = JSON.parse(
+                ctx.stub._state.get('SKILL_DECISION::sd-test-0001').toString()
+            );
+            expect(stored.state).to.equal('LINKED');
+        });
+ 
+    });
+ 
+    describe('UpdateDecisionOutcome (v1.0.2) — validation', () => {
+ 
+        it('rejects unknown outcome', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+            try {
+                await contract.UpdateDecisionOutcome(
+                    ctx, 'sd-test-0001', 'FORCE_ACTIVATE', 'tx', ''
+                );
+                throw new Error('expected to throw');
+            } catch (e) {
+                expect(e.message).to.match(/Invalid outcome/);
+            }
+        });
+ 
+        it('rejects missing anchorTxId for RECORDED_AND_LINKED', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+            try {
+                await contract.UpdateDecisionOutcome(
+                    ctx, 'sd-test-0001', 'RECORDED_AND_LINKED', '', ''
+                );
+                throw new Error('expected to throw');
+            } catch (e) {
+                expect(e.message).to.match(/anchorTxId is required/);
+            }
+        });
+ 
+        it('rejects missing errorReason for RECORDED_FAILED_ATTEMPT', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+            try {
+                await contract.UpdateDecisionOutcome(
+                    ctx, 'sd-test-0001', 'RECORDED_FAILED_ATTEMPT', '', ''
+                );
+                throw new Error('expected to throw');
+            } catch (e) {
+                expect(e.message).to.match(/errorReason is required/);
+            }
+        });
+ 
+        it('rejects nonexistent decisionId', async () => {
+            const ctx = makeCtx('Org1MSP');
+            try {
+                await contract.UpdateDecisionOutcome(
+                    ctx, 'sd-does-not-exist', 'RECORDED_AND_LINKED', 'tx', ''
+                );
+                throw new Error('expected to throw');
+            } catch (e) {
+                expect(e.message).to.match(/not found/);
+            }
+        });
+ 
+        it('rejects transition from a terminal state RECORDED_REJECT', async () => {
+            const ctx = makeCtx('Org1MSP');
+            // RecordSkillDecision with a REJECT decision sets state=RECORDED_REJECT
+            const env = validEnvelope({ decisionType: 'REJECT', shouldInvoke: false });
+            await contract.RecordSkillDecision(ctx, JSON.stringify(env));
+            try {
+                await contract.UpdateDecisionOutcome(
+                    ctx, env.decisionId, 'RECORDED_AND_LINKED', 'tx', ''
+                );
+                throw new Error('expected to throw');
+            } catch (e) {
+                expect(e.message).to.match(/already in terminal state|requires state RECORDED/);
+            }
+        });
+ 
+        it('rejects calls from an unknown MSP (existing _validateMSP gate)', async () => {
+            const ctx = makeCtx('Org1MSP');
+            await contract.RecordSkillDecision(ctx, JSON.stringify(validEnvelope()));
+ 
+            const wrongCtx = makeCtx('Org3MSP');
+            // Reuse the same state
+            wrongCtx.stub._state = ctx.stub._state;
+            try {
+                await contract.UpdateDecisionOutcome(
+                    wrongCtx, 'sd-test-0001', 'RECORDED_AND_LINKED', 'tx', ''
+                );
+                throw new Error('expected to throw');
+            } catch (e) {
+                expect(e.message).to.match(/Invalid MSP/);
+            }
+        });
+ 
+    });
+ 
     // -- Caller-identity enforcement -------------------------------------
     describe('Identity enforcement', () => {
         it('rejects record/link calls from an unknown MSP', async () => {

@@ -47,6 +47,18 @@ const decisionStore = new DecisionStore({
 // Helpers
 // =============================================================================
 
+function extractChaincodeErrorReason(err) {
+    if (!err) return 'unknown error';
+    const msg = err.message || String(err);
+ 
+    const m1 = msg.match(/message:'([^']+)'/);
+    if (m1) return m1[1];
+ 
+    const m2 = msg.match(/transaction returned with failure:\s*(.+?)(?:\s*$|\n)/);
+    if (m2) return m2[1];
+ 
+    return msg;
+}
 
 function txIdFrom(chainResponse) {
     if (!chainResponse) return null;
@@ -334,15 +346,38 @@ router.post('/execute', async (req, res) => {
         finalState = mapping.captureState(anchorResult);
     } catch (e) {
         logger.error(`[${gatewayCtx.org}] anchor-registry invoke failed: ${e.message}`);
-        // The audit record stays as RECORDED (the link step is skipped).
-        // External auditors will see an unlinked decision — that itself is evidence
-        // of a failed downstream call.
-        return res.status(500).json({
+ 
+        // v1.0.2: convert the audit record from RECORDED (non-terminal) to
+        // RECORDED_FAILED_ATTEMPT (terminal) with the on-chain failure reason.
+        // This means every decision now reaches a terminal audit state,
+        // closing the audit-chain gap from v1.0.1.
+        const errorReason = extractChaincodeErrorReason(e);
+        let outcomeRes = null;
+        try {
+            outcomeRes = await fabricClient.updateDecisionOutcome(
+                decision_id,
+                'RECORDED_FAILED_ATTEMPT',
+                '',                 // anchorTxId unused on failure path
+                errorReason
+            );
+        } catch (auditErr) {
+            // If even the audit-outcome update fails, the record stays at RECORDED.
+            // verify-chaincode-v1.0.2.sh catches this inconsistency.
+            logger.error(
+                `[${gatewayCtx.org}] CRITICAL: UpdateDecisionOutcome failed after chaincode rejection ` +
+                `decision_id=${decision_id} originalError="${e.message}" auditError="${auditErr.message}"`
+            );
+        }
+ 
+        return res.status(409).json({
             success: false,
             decision_id,
             audit_recorded: true,
             audit_tx: recordRes?.tx_id,
-            error: `anchor-registry invoke failed: ${e.message}`,
+            audit_terminal: outcomeRes ? 'RECORDED_FAILED_ATTEMPT' : 'RECORDED',
+            audit_outcome_tx: outcomeRes?.tx_id || null,
+            ledger_commit: false,
+            error: errorReason,
         });
     }
 

@@ -1,6 +1,6 @@
 {
   "name": "skill-audit-registry",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "MR Skill Audit Registry Chaincode - Records LLM-mediated governance decision provenance with dual-org endorsement",
   "main": "index.js",
   "engines": {

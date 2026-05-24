@@ -58,6 +58,19 @@ const STATE_RECORDED = 'RECORDED';     // initial — envelope written
 const STATE_LINKED = 'LINKED';         // anchor tx id attached
 const STATE_REJECTED_RECORD = 'RECORDED_REJECT';  // decision was REJECT — no anchor link expected
 
+const STATE_RECORDED_AND_LINKED = 'RECORDED_AND_LINKED';     // v1.0.2: terminal — chaincode succeeded, audit linked
+const STATE_RECORDED_FAILED_ATTEMPT = 'RECORDED_FAILED_ATTEMPT'; // v1.0.2: terminal — chaincode rejected, reason recorded
+ 
+// Set of all terminal states (used by UpdateDecisionOutcome for idempotency checks).
+const TERMINAL_STATES = new Set([
+    STATE_LINKED,                   // legacy v1.0.1 terminal (grandfathered)
+    STATE_REJECTED_RECORD,          // existing terminal for REJECT/CLARIFY
+    STATE_RECORDED_AND_LINKED,      // new in v1.0.2
+    STATE_RECORDED_FAILED_ATTEMPT,  // new in v1.0.2
+]);
+ 
+const MAX_ERROR_REASON_LEN = 256;
+
 // Allowed values mirroring SKILL.md output contract
 const ALLOWED_DECISION_TYPES = ['INVOKE', 'REJECT', 'CLARIFY'];
 const ALLOWED_RISK_LEVELS = ['READ_ONLY', 'WRITE_LOW', 'WRITE_GOVERNED', 'FORBIDDEN'];
@@ -97,6 +110,36 @@ function txTimeISO(ctx) {
     const millis = Math.floor(Number(ts.nanos || 0) / 1e6);
     return new Date(seconds * 1000 + millis).toISOString();
 }
+
+/**
+ * Sanitize an error reason string for on-chain storage:
+ *   - strip control characters (keep printable ASCII + common punctuation)
+ *   - collapse whitespace
+ *   - truncate to MAX_ERROR_REASON_LEN with a trailing marker
+ *
+ * Forensic-friendly. Does not leak raw stack traces or user text.
+ */
+function sanitizeErrorReason(s) {
+    if (s == null) return '';
+    let r = String(s);
+    // remove non-printable control characters
+    r = r.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+    // collapse whitespace
+    r = r.replace(/\s+/g, ' ').trim();
+    if (r.length > MAX_ERROR_REASON_LEN) {
+        r = r.slice(0, MAX_ERROR_REASON_LEN - 12) + '...truncated';
+    }
+    return r;
+}
+ 
+/**
+ * v1.0.2 helper: returns true if a state is a terminal success
+ * (either the new RECORDED_AND_LINKED or the grandfathered LINKED).
+ */
+function isLinkedTerminal(state) {
+    return state === STATE_LINKED || state === STATE_RECORDED_AND_LINKED;
+}
+ 
 
 class SkillAuditRegistryContract extends Contract {
 
@@ -348,6 +391,143 @@ class SkillAuditRegistryContract extends Contract {
             linked_anchor_tx_id: anchorTxId,
             final_state: finalState,
             linked_at: linkedAt,
+            event_id: eventId,
+        });
+    }
+
+    /**
+     * Update an audit record to a v1.0.2 terminal outcome.
+     *
+     * Allowed:
+     *   STATE_RECORDED → STATE_RECORDED_AND_LINKED     (success path)
+     *   STATE_RECORDED → STATE_RECORDED_FAILED_ATTEMPT (chaincode rejected)
+     *
+     * Identity-bound via the existing _validateMSP check (same as RecordSkillDecision
+     * and LinkAnchorTx). Idempotent on same outcome + same payload.
+     *
+     * Called by the gateway in /skills/execute, AFTER the anchor-registry invoke
+     * resolves (either to success or to a chaincode-side rejection).
+     *
+     * NOTE: LinkAnchorTx still works and is still called for the success path
+     * in v1.0.2 (for backward compatibility). UpdateDecisionOutcome is the new
+     * canonical entry point for the failure path. Gateways may also call it on
+     * the success path; in that case it produces the same effect as LinkAnchorTx
+     * but with state=RECORDED_AND_LINKED instead of LINKED.
+     *
+     * @param {Context} ctx
+     * @param {string} decisionId
+     * @param {string} outcome             'RECORDED_AND_LINKED' | 'RECORDED_FAILED_ATTEMPT'
+     * @param {string} [anchorTxId]        required when outcome=RECORDED_AND_LINKED
+     * @param {string} [errorReason]       required when outcome=RECORDED_FAILED_ATTEMPT
+     * @returns {string} JSON-stringified updated record
+     */
+    async UpdateDecisionOutcome(ctx, decisionId, outcome, anchorTxId, errorReason) {
+        const callerMsp = ctx.clientIdentity.getMSPID();
+        this._validateMSP(callerMsp);
+ 
+        // Validate outcome
+        const validOutcomes = [STATE_RECORDED_AND_LINKED, STATE_RECORDED_FAILED_ATTEMPT];
+        if (!validOutcomes.includes(outcome)) {
+            throw new Error(
+                `Invalid outcome '${outcome}'. Must be one of: ${validOutcomes.join(', ')}`
+            );
+        }
+ 
+        // Outcome-specific arg requirements
+        if (outcome === STATE_RECORDED_AND_LINKED) {
+            if (!anchorTxId || typeof anchorTxId !== 'string' || anchorTxId.length === 0) {
+                throw new Error('anchorTxId is required when outcome is RECORDED_AND_LINKED');
+            }
+        } else { // RECORDED_FAILED_ATTEMPT
+            if (!errorReason || typeof errorReason !== 'string' || errorReason.length === 0) {
+                throw new Error('errorReason is required when outcome is RECORDED_FAILED_ATTEMPT');
+            }
+        }
+ 
+        // Fetch the record
+        const key = `${PREFIX_DECISION}${decisionId}`;
+        const raw = await ctx.stub.getState(key);
+        if (!raw || raw.length === 0) {
+            throw new Error(`Decision ${decisionId} not found`);
+        }
+        const record = JSON.parse(raw.toString());
+ 
+        // Idempotency: already terminal?
+        if (TERMINAL_STATES.has(record.state)) {
+            // Same outcome + same payload → no-op, return existing record.
+            // Treat LINKED + RECORDED_AND_LINKED as equivalent for this check.
+            const sameOutcome =
+                record.state === outcome ||
+                (record.state === STATE_LINKED && outcome === STATE_RECORDED_AND_LINKED);
+ 
+            if (sameOutcome) {
+                if (outcome === STATE_RECORDED_AND_LINKED) {
+                    if (record.linkedAnchorTxId !== anchorTxId) {
+                        throw new Error(
+                            `Decision ${decisionId} already in ${record.state} with different anchorTxId`
+                        );
+                    }
+                } else { // RECORDED_FAILED_ATTEMPT
+                    const sanitized = sanitizeErrorReason(errorReason);
+                    if (record.errorReason !== sanitized) {
+                        throw new Error(
+                            `Decision ${decisionId} already in RECORDED_FAILED_ATTEMPT with different reason`
+                        );
+                    }
+                }
+                // Idempotent no-op
+                return JSON.stringify({
+                    success: true,
+                    decision_id: decisionId,
+                    state: record.state,
+                    note: 'already terminal (idempotent)',
+                });
+            }
+ 
+            // Different terminal outcome → conflict
+            throw new Error(
+                `Decision ${decisionId} is already in terminal state ${record.state}; ` +
+                `cannot transition to ${outcome}`
+            );
+        }
+ 
+        // Only RECORDED is a valid source state for v1.0.2 transitions
+        if (record.state !== STATE_RECORDED) {
+            throw new Error(
+                `Decision ${decisionId} is in state ${record.state}; ` +
+                `UpdateDecisionOutcome requires state ${STATE_RECORDED}`
+            );
+        }
+ 
+        // Apply the transition
+        const terminalAt = txTimeISO(ctx);
+        record.state = outcome;
+        record.terminalAt = terminalAt;
+        record.terminalBy = callerMsp;
+ 
+        if (outcome === STATE_RECORDED_AND_LINKED) {
+            record.linkedAnchorTxId = anchorTxId;
+            record.errorReason = null;
+        } else { // RECORDED_FAILED_ATTEMPT
+            record.errorReason = sanitizeErrorReason(errorReason);
+            record.linkedAnchorTxId = null;
+        }
+ 
+        await ctx.stub.putState(key, Buffer.from(JSON.stringify(record)));
+ 
+        const eventId = this._emitEvent(ctx, 'SKILL_DECISION_OUTCOME_UPDATED', {
+            decisionId,
+            outcome,
+            terminalAt,
+            terminalBy: callerMsp,
+        });
+ 
+        return JSON.stringify({
+            success: true,
+            decision_id: decisionId,
+            state: outcome,
+            terminal_at: terminalAt,
+            terminal_by: callerMsp,
             event_id: eventId,
         });
     }

@@ -466,6 +466,44 @@ class FabricClient {
         );
         return resultToJson(result);
     }
+    
+    /**
+     * v1.0.2: After the anchor-registry invoke completes (success or failure),
+     * write a terminal outcome to the audit record.
+     *
+     * On success path:
+     *   updateDecisionOutcome(decisionId, 'RECORDED_AND_LINKED', anchorTxId, '')
+     *
+     * On chaincode-rejection path:
+     *   updateDecisionOutcome(decisionId, 'RECORDED_FAILED_ATTEMPT', '', errorReason)
+     *
+     * Idempotent on same outcome + same payload (the chaincode handles it).
+     *
+     * NOTE: For the success path, the gateway can call EITHER linkAnchorTx
+     * (v1.0.1 flow, sets state=LINKED) OR updateDecisionOutcome (v1.0.2 flow,
+     * sets state=RECORDED_AND_LINKED). Both are treated as terminal success
+     * by query helpers. Current skills.js still calls linkAnchorTx for
+     * success; this method is currently called only on the failure path.
+     *
+     * @param {string} decisionId
+     * @param {'RECORDED_AND_LINKED'|'RECORDED_FAILED_ATTEMPT'} outcome
+     * @param {string} anchorTxId    - required for RECORDED_AND_LINKED, '' otherwise
+     * @param {string} errorReason   - required for RECORDED_FAILED_ATTEMPT, '' otherwise
+     * @returns {Promise<object>}
+     */
+    async updateDecisionOutcome(decisionId, outcome, anchorTxId, errorReason) {
+        if (!this.connected) throw new Error('Not connected to Fabric network');
+        if (!this.auditContract) throw new Error('audit contract not bound');
+        logger.info(`[${this.org}] UpdateDecisionOutcome: ${decisionId} → ${outcome}`);
+        const result = await this.auditContract.submitTransaction(
+            'UpdateDecisionOutcome',
+            decisionId,
+            outcome,
+            anchorTxId || '',
+            errorReason || ''
+        );
+        return resultToJson(result);
+    }
 
     /**
      * Read-only: fetch a single audit record by decisionId.
