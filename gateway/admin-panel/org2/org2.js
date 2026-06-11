@@ -323,13 +323,14 @@ async function refreshPending() {
 async function refreshRevocations() {
     try {
         const data = await apiRequest('/admin/pending-revocations');
-        const revocations = data.revocations || [];
+        // Gateway returns the chaincode shape: { pendingRevocations: [ { assetId, initiatedBy, ... } ] }
+        const revocations = data.pendingRevocations || [];
         
         updateStat('revokeCount', revocations.length);
         
         // My revocations (waiting for Org1)
-        const myRevocations = revocations.filter(r => r.initiated_by === MY_MSP_ID);
-        const theirRevocations = revocations.filter(r => r.initiated_by === OTHER_MSP_ID);
+        const myRevocations = revocations.filter(r => r.initiatedBy === MY_MSP_ID);
+        const theirRevocations = revocations.filter(r => r.initiatedBy === OTHER_MSP_ID);
         
         const myBody = document.getElementById('myRevocationsBody');
         if (myBody) {
@@ -338,9 +339,9 @@ async function refreshRevocations() {
             } else {
                 myBody.innerHTML = myRevocations.map(r => `
                     <tr>
-                        <td><code>${r.asset_id}</code></td>
+                        <td><code>${r.assetId}</code></td>
                         <td class="muted">${r.reason || 'No reason'}</td>
-                        <td class="muted">${formatDate(r.initiated_at)}</td>
+                        <td class="muted">${formatDate(r.initiatedAt)}</td>
                         <td><span class="badge info">Waiting for Org1</span></td>
                     </tr>
                 `).join('');
@@ -354,13 +355,13 @@ async function refreshRevocations() {
             } else {
                 theirBody.innerHTML = theirRevocations.map(r => `
                     <tr class="action-row">
-                        <td><code>${r.asset_id}</code></td>
-                        <td class="muted">${r.initiated_by}</td>
+                        <td><code>${r.assetId}</code></td>
+                        <td class="muted">${r.initiatedBy}</td>
                         <td class="muted">${r.reason || 'No reason'}</td>
                         <td>
                             <div class="btn-group">
-                                <button class="btn danger small" onclick="endorseRevoke('${r.asset_id}')">Approve</button>
-                                <button class="btn small" onclick="rejectRevoke('${r.asset_id}')">Reject</button>
+                                <button class="btn danger small" onclick="endorseRevoke('${r.assetId}')">Approve</button>
+                                <button class="btn small" onclick="rejectRevoke('${r.assetId}')">Reject</button>
                             </div>
                         </td>
                     </tr>
